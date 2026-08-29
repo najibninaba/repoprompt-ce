@@ -5,6 +5,11 @@ import XCTest
 final class CodeMapBuildAdmissionTests: XCTestCase {
     #if DEBUG
         func testProcessWideCodemapBuildAdmissionWaitsForForegroundActivityAndUsesRequestedPriority() async throws {
+            let idleBeforeTest = await waitForProcessWideLimiterSnapshot(timeoutNanoseconds: 5_000_000_000) {
+                $0.isIdle
+            }
+            XCTAssertTrue(idleBeforeTest.isIdle)
+
             let foregroundGate = CodeMapAdmissionGate()
             let operationStarted = CodeMapAdmissionSignal()
             let foreground = Task {
