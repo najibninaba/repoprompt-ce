@@ -666,6 +666,7 @@ struct AgentRunMCPToolService {
         let outcome: AgentExternalMCPRunStarter.StartOutcome
         var lifecycleAdmissionAttempted = false
         var providerDispatchAttempted = false
+        var modelParameterStagingRollback: AgentModeViewModel.MCPModelParameterSelectionStagingRollback?
         do {
             try await Self.requireWritableWorkspaceAuthority(
                 targetWindow.workspaceManager.domainAuthorityAdmissionIssue(for: workspace.id)
@@ -688,7 +689,7 @@ struct AgentRunMCPToolService {
                 }
             #endif
             providerDispatchAttempted = true
-            try agentModeVM.mcpStageModelParameterSelections(
+            modelParameterStagingRollback = try agentModeVM.mcpStageModelParameterSelections(
                 tabID: target.tabID,
                 agentRaw: selection.agentRaw,
                 modelRaw: selection.modelRaw,
@@ -743,6 +744,14 @@ struct AgentRunMCPToolService {
                 decision: .rejected,
                 reason: providerFailureReason
             )
+            if let modelParameterStagingRollback {
+                switch target.origin {
+                case .existingSession, .existingTab:
+                    agentModeVM.mcpRollbackStagedModelParameterSelections(modelParameterStagingRollback)
+                case .createdForSessionResume, .createdNewTab:
+                    break
+                }
+            }
             let decoratedError = startWorktreeCoordinator.providerStartError(
                 error,
                 targetSessionID: target.sessionID,

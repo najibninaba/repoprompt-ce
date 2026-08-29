@@ -190,6 +190,32 @@ enum DurableArtifactTestSupport {
         }
     }
 
+    static func openObjectWithBusyRetry(
+        timeout: TimeInterval = 1,
+        file: StaticString = #filePath,
+        line: UInt = #line,
+        _ operation: () throws -> DurableArtifactOpenResult
+    ) throws -> DurableArtifactOpenResult {
+        let deadline = Date().addingTimeInterval(timeout)
+        while true {
+            let result = try operation()
+            switch result {
+            case .busy, .corruptBusy:
+                guard Date() < deadline else {
+                    XCTFail(
+                        "Object open remained \(String(describing: result)) after \(timeout)s",
+                        file: file,
+                        line: line
+                    )
+                    return result
+                }
+                sched_yield()
+            default:
+                return result
+            }
+        }
+    }
+
     enum Failure: Error {
         case unexpectedPublication(DurableArtifactPublicationResult)
     }

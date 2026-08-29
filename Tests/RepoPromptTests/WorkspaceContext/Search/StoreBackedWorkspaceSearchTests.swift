@@ -1399,17 +1399,25 @@ final class StoreBackedWorkspaceSearchTests: XCTestCase {
             let store = WorkspaceFileContextStore()
             _ = try await store.loadRoot(path: root.path)
             _ = startedCapture(label: "store-backed-revision-identity", maxSamples: 200)
-            let cold = try await searchContent(
-                pattern: "revisionIdentityToken",
-                store: store
-            )
-            let warm = try await searchContent(
-                pattern: "revisionIdentityToken",
-                store: store
-            )
+            let correlation = try XCTUnwrap(EditFlowPerf.makeLifecycleCorrelationIfActive())
+            let (cold, warm) = try await EditFlowPerf.$currentLifecycleCorrelation.withValue(correlation) {
+                let cold = try await self.searchContent(
+                    pattern: "revisionIdentityToken",
+                    store: store
+                )
+                let warm = try await self.searchContent(
+                    pattern: "revisionIdentityToken",
+                    store: store
+                )
+                return (cold, warm)
+            }
             let capture = EditFlowPerf.debugCaptureSnapshot(finish: true)
             let lineIndexRows = capture.stages.filter {
                 $0.stageName == String(describing: EditFlowPerf.Stage.Search.lineIndexLookup)
+            }
+            let workerEvents = capture.lifecycleEvents.filter {
+                $0.correlationID == correlation.id.uuidString &&
+                    $0.eventName == "FileSystem.ContentReadWorkerReturned"
             }
             let cache = await store.searchDecodedContentCacheSnapshotForTesting()
 
@@ -1419,18 +1427,9 @@ final class StoreBackedWorkspaceSearchTests: XCTestCase {
             XCTAssertTrue(lineIndexRows.allSatisfy { $0.sanitizedDimensions.contains("scanKind=revision") })
             XCTAssertTrue(lineIndexRows.allSatisfy { !$0.sanitizedDimensions.contains("hash-fallback") })
             XCTAssertEqual(
-                capture.stages
-                    .filter { $0.stageName == String(describing: EditFlowPerf.Stage.FileSystem.contentReadWorkerPermitWait) }
-                    .reduce(0) { $0 + $1.sampleCount },
+                workerEvents.count,
                 1,
-                "The warm decoded-content hit must not enter filesystem read admission"
-            )
-            XCTAssertEqual(
-                capture.stages
-                    .filter { $0.stageName == String(describing: EditFlowPerf.Stage.FileSystem.contentReadWorkerBody) }
-                    .reduce(0) { $0 + $1.sampleCount },
-                1,
-                "Only the cold miss should execute a disk-read worker body"
+                "The warm decoded-content hit must not dispatch a second filesystem read worker"
             )
             XCTAssertEqual(cache.loadCount, 1)
             XCTAssertGreaterThanOrEqual(cache.hitCount, 1)

@@ -420,9 +420,12 @@ final class DurableArtifactCrashAndCatalogTests: XCTestCase {
             }
             XCTAssertEqual(fsync(descriptor), 0)
             Darwin.close(descriptor)
-            guard case .corruptQuarantined = try store.openObject(
-                DurableArtifactTestSupport.expectation(id: id)
-            ) else { return XCTFail("\(mutation) should quarantine") }
+            let openResult = try DurableArtifactTestSupport.openObjectWithBusyRetry {
+                try store.openObject(DurableArtifactTestSupport.expectation(id: id))
+            }
+            guard case .corruptQuarantined = openResult else {
+                return XCTFail("\(mutation) should quarantine; result=\(String(describing: openResult))")
+            }
         }
     }
 
