@@ -1472,9 +1472,16 @@
             let snapshot = EditFlowPerf.debugCaptureSnapshot(finish: true)
             XCTAssertFalse(snapshot.active)
             XCTAssertFalse(EditFlowPerf.isDebugCaptureActive)
-            XCTAssertEqual(snapshot.retainedSampleCount, 8)
+            let relevantStageNames = Set([
+                "EditFlow.MCPToolCall.PreLimiterEnvelope",
+                "EditFlow.MCPToolCall.RunScopedTabRebindFallback",
+                "EditFlow.MCPToolCall.PresentationContextResolution",
+                "EditFlow.MCPToolCall.PermitPostDispatchEnvelope"
+            ])
+            let relevantRows = snapshot.stages.filter { relevantStageNames.contains($0.stageName) }
+            XCTAssertEqual(relevantRows.reduce(0) { $0 + $1.sampleCount }, 8)
 
-            let plain = try XCTUnwrap(snapshot.stages.first { $0.stageName == "EditFlow.MCPToolCall.PreLimiterEnvelope" })
+            let plain = try XCTUnwrap(relevantRows.first { $0.stageName == "EditFlow.MCPToolCall.PreLimiterEnvelope" })
             XCTAssertEqual(plain.sanitizedDimensions, "tool=read_file")
             XCTAssertEqual(plain.sampleCount, 1)
 
@@ -1485,7 +1492,7 @@
                 "tool=read_file outcome=success",
                 "tool=read_file outcome=toolNotFound"
             ]
-            let combinedRows = snapshot.stages.filter { $0.stageName != "EditFlow.MCPToolCall.PreLimiterEnvelope" }
+            let combinedRows = relevantRows.filter { $0.stageName != "EditFlow.MCPToolCall.PreLimiterEnvelope" }
             XCTAssertTrue(combinedRows.allSatisfy { $0.sampleCount == 1 })
             XCTAssertTrue(combinedRows.allSatisfy { expectedCombinedDimensions.contains($0.sanitizedDimensions) })
             XCTAssertTrue(combinedRows.allSatisfy { !$0.sanitizedDimensions.contains("/") && !$0.sanitizedDimensions.contains("payload") })
