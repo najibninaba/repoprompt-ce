@@ -82,4 +82,44 @@ final class ACPIntegratedAgentModeRunnerExecutionTests: XCTestCase {
             [.executionStarted, .executionSuperseded]
         )
     }
+
+    func testModelParameterApplicationAcceptsAppliedAndAlreadyCurrentSelections() throws {
+        let selection = ACPModelParameterSelection(
+            providerID: .cursor,
+            baseModelRaw: "grok-4.6",
+            kind: .thinking,
+            configID: "thought_level",
+            valueRaw: "high"
+        )
+
+        XCTAssertNoThrow(try ACPIntegratedAgentModeRunner.testValidateModelParameterApplicationReport(.init(
+            applied: [selection],
+            alreadyCurrent: [],
+            skipped: []
+        )))
+        XCTAssertNoThrow(try ACPIntegratedAgentModeRunner.testValidateModelParameterApplicationReport(.init(
+            applied: [],
+            alreadyCurrent: [selection],
+            skipped: []
+        )))
+    }
+
+    func testModelParameterApplicationRejectsStaleUnsupportedSelectionBeforePrompt() {
+        let selection = ACPModelParameterSelection(
+            providerID: .cursor,
+            baseModelRaw: "grok-4.6",
+            kind: .speed,
+            configID: "fast",
+            valueRaw: "true"
+        )
+
+        XCTAssertThrowsError(try ACPIntegratedAgentModeRunner.testValidateModelParameterApplicationReport(.init(
+            applied: [],
+            alreadyCurrent: [],
+            skipped: [selection]
+        ))) { error in
+            XCTAssertTrue(error.localizedDescription.contains("stale or unsupported"))
+            XCTAssertTrue(error.localizedDescription.contains("fast=true"))
+        }
+    }
 }

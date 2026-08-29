@@ -179,6 +179,7 @@ actor AgentSessionDataService {
         let agentKind: String?
         let agentModel: String?
         let agentReasoningEffort: String?
+        let acpModelParameterSelections: [ACPModelParameterSelection]?
         let lastRunState: String?
         let providerSessionID: String?
         let providerCleanupHandle: ProviderConversationCleanupHandle?
@@ -1112,6 +1113,7 @@ actor AgentSessionDataService {
                 agentKind: header.agentKind,
                 agentModel: header.agentModel,
                 agentReasoningEffort: header.agentReasoningEffort,
+                acpModelParameterSelections: header.acpModelParameterSelections ?? [],
                 lastRunState: AgentSessionRestoreSupport.coldRestoredLastRunStateRaw(header.lastRunState),
                 providerSessionID: header.providerSessionID,
                 providerCleanupHandle: header.providerCleanupHandle,

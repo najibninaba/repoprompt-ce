@@ -5,6 +5,330 @@ import Foundation
 import XCTest
 
 final class ACPAgentSessionControllerModeConfigTests: XCTestCase {
+    func testCursorPollingBaselinePublishesModelOnlySelectorWithoutAutoChoice() async throws {
+        AgentACPModelRegistry.shared.test_reset(providerID: .cursor)
+        defer { AgentACPModelRegistry.shared.test_reset(providerID: .cursor) }
+        let workspace = try makeTemporaryDirectory()
+        let scriptURL = try makeFakeACPServerScript()
+        let recordURL = workspace.appendingPathComponent("cursor-polling-model-only.jsonl")
+        let client = CursorACPControllerModelDiscoveryClient(providerFactory: { agent, _ in
+            XCTAssertEqual(agent, .cursor)
+            return ModeConfigFakeACPProvider(
+                commandPath: scriptURL.path,
+                launchArguments: [],
+                environment: [
+                    "ACP_RECORD_PATH": recordURL.path,
+                    "ACP_SHAPE": "modern",
+                    "ACP_INCLUDE_MODEL": "1"
+                ],
+                mcpServers: [],
+                providerID: .cursor
+            )
+        })
+        let service = CursorACPModelPollingService(client: client, intervalNanos: 60_000_000_000)
+        addTeardownBlock { await service.shutdown() }
+
+        let snapshot = try await service.discoverOnce(workspacePath: workspace.path)
+
+        XCTAssertEqual(snapshot?.models.options.map(\.rawValue), ["model-a", "model-b"])
+        XCTAssertEqual(snapshot?.models.currentModelRaw, "model-a")
+        XCTAssertTrue(recordedMutationRequests(at: recordURL).isEmpty)
+    }
+
+    func testCursorTargetedModelOnlyDiscoveryExposesInspectedModelLocally() async throws {
+        AgentACPModelRegistry.shared.test_reset(providerID: .cursor)
+        defer { AgentACPModelRegistry.shared.test_reset(providerID: .cursor) }
+        let workspace = try makeTemporaryDirectory()
+        let scriptURL = try makeFakeACPServerScript()
+        let recordURL = workspace.appendingPathComponent("cursor-targeted-model-only.jsonl")
+        let client = CursorACPControllerModelDiscoveryClient(providerFactory: { _, _ in
+            ModeConfigFakeACPProvider(
+                commandPath: scriptURL.path,
+                launchArguments: [],
+                environment: [
+                    "ACP_RECORD_PATH": recordURL.path,
+                    "ACP_SHAPE": "modern",
+                    "ACP_INCLUDE_MODEL": "1"
+                ],
+                mcpServers: [],
+                providerID: .cursor
+            )
+        })
+
+        let snapshot = try await client.discoverModels(
+            workspacePath: workspace.path,
+            preferredModelRaw: "model-b"
+        )
+
+        XCTAssertEqual(snapshot?.currentModelRaw, "model-b")
+        XCTAssertTrue(snapshot?.modelParameterSets.isEmpty == true)
+        XCTAssertNil(AgentACPModelRegistry.shared.test_snapshot(providerID: .cursor))
+        XCTAssertEqual(
+            recordedMutationRequests(at: recordURL).map { $0.params["value"] as? String },
+            ["model-b"]
+        )
+    }
+
+    func testCursorParameterizedModelPickerAdvertisesCapabilityAndAppliesExactIndependentValues() async throws {
+        AgentACPModelRegistry.shared.test_reset(providerID: .cursor)
+        defer { AgentACPModelRegistry.shared.test_reset(providerID: .cursor) }
+        let fixture = try makeFixture(
+            shape: "modern",
+            extraEnvironment: [
+                "ACP_INCLUDE_MODEL": "1",
+                "ACP_INCLUDE_PARAMETERS": "1"
+            ],
+            providerID: .cursor
+        )
+        _ = try await fixture.controller.bootstrap()
+
+        let initialize = try XCTUnwrap(recordedRequests(at: fixture.recordURL, method: "initialize").first)
+        let capabilities = try XCTUnwrap(initialize.params["clientCapabilities"] as? [String: Any])
+        let metadata = try XCTUnwrap(capabilities["_meta"] as? [String: Any])
+        XCTAssertEqual(metadata["parameterizedModelPicker"] as? Bool, true)
+
+        let discoveredSnapshot = await fixture.controller.currentDiscoveredSessionModels()
+        let snapshot = try XCTUnwrap(discoveredSnapshot)
+        XCTAssertEqual(snapshot.options.map(\.rawValue), ["model-a", "model-b"])
+        let parameterSet = try XCTUnwrap(snapshot.modelParameterSets.first)
+        XCTAssertEqual(parameterSet.baseModelRaw, "model-a")
+        XCTAssertEqual(parameterSet.parameters.map(\.kind), [.thinking, .speed])
+        XCTAssertEqual(parameterSet.parameters.map(\.configID), ["Cursor.Thought-Level", "Cursor.Fast-Mode"])
+
+        try await fixture.controller.setSessionModel("model-b")
+        let savedSelections: [ACPModelParameterSelection] = [
+            .init(
+                providerID: .cursor,
+                baseModelRaw: "model-a",
+                kind: .thinking,
+                configID: "Cursor.Thought-Level",
+                valueRaw: "medium"
+            ),
+            .init(
+                providerID: .cursor,
+                baseModelRaw: "model-b",
+                kind: .speed,
+                configID: "Cursor.Fast-Mode",
+                valueRaw: "true"
+            ),
+            .init(
+                providerID: .cursor,
+                baseModelRaw: "model-b",
+                kind: .thinking,
+                configID: "Cursor.Thought-Level",
+                valueRaw: "HIGH"
+            )
+        ]
+        let activeSelections = ACPModelParameterSelection.selections(
+            for: .cursor,
+            activeBaseModelRaw: "Model B [Default]",
+            from: savedSelections
+        )
+        XCTAssertEqual(activeSelections.map(\.baseModelRaw), ["model-b", "model-b"])
+
+        let report = try await fixture.controller.applySessionModelParameterSelections(activeSelections)
+        try await fixture.controller.setSessionMode("plan")
+        try await fixture.controller.prompt(AgentMessage(userMessage: "Verify ordering"))
+        await fixture.controller.shutdown()
+
+        XCTAssertEqual(report.applied.map(\.kind), [.thinking, .speed])
+        XCTAssertTrue(report.skipped.isEmpty)
+        let mutations = recordedMutationRequests(at: fixture.recordURL)
+        XCTAssertEqual(
+            mutations.map { $0.params["configId"] as? String },
+            ["model", "Cursor.Thought-Level", "Cursor.Fast-Mode", "mode"]
+        )
+        XCTAssertEqual(mutations.map { $0.params["value"] as? String }, ["model-b", "High", "true", "plan"])
+        let configurationAndPromptMethods = recordedRequests(at: fixture.recordURL)
+            .map(\.method)
+            .filter { $0 == "session/set_config_option" || $0 == "session/prompt" }
+        XCTAssertEqual(configurationAndPromptMethods, [
+            "session/set_config_option",
+            "session/set_config_option",
+            "session/set_config_option",
+            "session/set_config_option",
+            "session/prompt"
+        ])
+    }
+
+    func testCursorObservedFastSelectorAppliesExactConfigIDAndBooleanStringValue() async throws {
+        let fixture = try makeFixture(
+            shape: "modern",
+            extraEnvironment: [
+                "ACP_INCLUDE_MODEL": "1",
+                "ACP_INCLUDE_PARAMETERS": "1",
+                "ACP_OBSERVED_FAST_SELECTOR": "1"
+            ],
+            providerID: .cursor
+        )
+        _ = try await fixture.controller.bootstrap()
+
+        let report = try await fixture.controller.applySessionModelParameterSelections([.init(
+            providerID: .cursor,
+            baseModelRaw: "model-a",
+            kind: .speed,
+            configID: "fast",
+            valueRaw: "true"
+        )])
+
+        XCTAssertEqual(report.applied.map(\.valueRaw), ["true"])
+        XCTAssertTrue(report.alreadyCurrent.isEmpty)
+        XCTAssertTrue(report.skipped.isEmpty)
+        let mutation = try XCTUnwrap(recordedMutationRequests(at: fixture.recordURL).first)
+        XCTAssertEqual(mutation.params["configId"] as? String, "fast")
+        XCTAssertEqual(mutation.params["value"] as? String, "true")
+    }
+
+    func testCursorAlreadyCurrentParameterIsSuccessfulNoOpNotUnsupportedSkip() async throws {
+        let fixture = try makeFixture(
+            shape: "modern",
+            extraEnvironment: ["ACP_INCLUDE_MODEL": "1", "ACP_INCLUDE_PARAMETERS": "1"],
+            providerID: .cursor
+        )
+        _ = try await fixture.controller.bootstrap()
+        let selection = ACPModelParameterSelection(
+            providerID: .cursor,
+            baseModelRaw: "model-a",
+            kind: .thinking,
+            configID: "Cursor.Thought-Level",
+            valueRaw: "medium"
+        )
+
+        let report = try await fixture.controller.applySessionModelParameterSelections([selection])
+
+        XCTAssertTrue(report.applied.isEmpty)
+        XCTAssertEqual(report.alreadyCurrent, [selection])
+        XCTAssertTrue(report.skipped.isEmpty)
+        XCTAssertTrue(recordedMutationRequests(at: fixture.recordURL).isEmpty)
+    }
+
+    func testCursorParameterizedControllerKeepsMutatedSnapshotLocalAndSecondTabUsesPollingDefaults() async throws {
+        AgentACPModelRegistry.shared.test_reset(providerID: .cursor)
+        defer { AgentACPModelRegistry.shared.test_reset(providerID: .cursor) }
+        let pollingDefaults = ACPDiscoveredSessionModels(
+            options: [
+                .init(rawValue: "model-a", displayName: "Model A", description: nil, isDefault: true),
+                .init(rawValue: "model-b", displayName: "Model B", description: nil, isDefault: false)
+            ],
+            currentModelRaw: "model-a",
+            modelParameterSets: [.init(
+                baseModelRaw: "model-a",
+                parameters: [.init(
+                    kind: .thinking,
+                    configID: "Cursor.Thought-Level",
+                    displayName: "Effort",
+                    choices: [
+                        .init(rawValue: "Medium", displayName: "Medium"),
+                        .init(rawValue: "High", displayName: "High")
+                    ],
+                    currentValueRaw: "Medium"
+                )]
+            )]
+        )
+        XCTAssertTrue(AgentACPModelRegistry.shared.updateDiscoveredModels(pollingDefaults, for: .cursor))
+
+        let first = try makeFixture(
+            shape: "modern",
+            extraEnvironment: ["ACP_INCLUDE_MODEL": "1", "ACP_INCLUDE_PARAMETERS": "1"],
+            providerID: .cursor
+        )
+        _ = try await first.controller.bootstrap()
+        _ = try await first.controller.applySessionModelParameterSelections([.init(
+            providerID: .cursor,
+            baseModelRaw: "model-a",
+            kind: .thinking,
+            configID: "Cursor.Thought-Level",
+            valueRaw: "High"
+        )])
+
+        let firstDiscoveredSnapshot = await first.controller.currentDiscoveredSessionModels()
+        let firstLocal = try XCTUnwrap(firstDiscoveredSnapshot)
+        XCTAssertEqual(firstLocal.modelParameterSets.first?.parameters.first?.currentValueRaw, "High")
+        XCTAssertEqual(
+            AgentACPModelRegistry.shared.test_snapshot(providerID: .cursor)?.modelParameterSets.first?.parameters.first?.currentValueRaw,
+            "Medium"
+        )
+
+        let second = try makeFixture(
+            shape: "modern",
+            extraEnvironment: ["ACP_INCLUDE_MODEL": "1", "ACP_INCLUDE_PARAMETERS": "1"],
+            providerID: .cursor
+        )
+        _ = try await second.controller.bootstrap()
+        let secondDiscoveredSnapshot = await second.controller.currentDiscoveredSessionModels()
+        let secondLocal = try XCTUnwrap(secondDiscoveredSnapshot)
+        let defaults = ACPModelParameterResolver.resolve(
+            providerID: .cursor,
+            selectedModelRaw: "model-a",
+            snapshot: secondLocal,
+            persistedSelections: []
+        )
+        XCTAssertEqual(defaults.map(\.selectedChoice.rawValue), ["medium", "false"])
+        _ = try await second.controller.applySessionModelParameterSelections([])
+        XCTAssertTrue(recordedMutationRequests(at: second.recordURL).isEmpty)
+    }
+
+    func testCursorAliasDuplicateParameterSelectionsApplyNewestValueExactlyOnce() async throws {
+        let fixture = try makeFixture(
+            shape: "modern",
+            extraEnvironment: ["ACP_INCLUDE_MODEL": "1", "ACP_INCLUDE_PARAMETERS": "1"],
+            providerID: .cursor
+        )
+        _ = try await fixture.controller.bootstrap()
+
+        let report = try await fixture.controller.applySessionModelParameterSelections([
+            .init(
+                providerID: .cursor,
+                baseModelRaw: "Model A",
+                kind: .thinking,
+                configID: "Cursor.Thought-Level",
+                valueRaw: "Medium"
+            ),
+            .init(
+                providerID: .cursor,
+                baseModelRaw: "model-a",
+                kind: .thinking,
+                configID: "Cursor.Thought-Level",
+                valueRaw: "High"
+            )
+        ])
+
+        XCTAssertEqual(report.applied.map(\.valueRaw), ["High"])
+        XCTAssertEqual(recordedMutationRequests(at: fixture.recordURL).count, 1)
+        XCTAssertEqual(recordedMutationRequests(at: fixture.recordURL).first?.params["value"] as? String, "High")
+    }
+
+    func testOpenCodeDoesNotAdvertiseParameterizedModelPickerCapability() async throws {
+        let fixture = try makeFixture(shape: "modern", providerID: .openCode)
+        try await withBootstrappedController(fixture.controller) { _ in }
+
+        let initialize = try XCTUnwrap(recordedRequests(at: fixture.recordURL, method: "initialize").first)
+        let capabilities = try XCTUnwrap(initialize.params["clientCapabilities"] as? [String: Any])
+        XCTAssertNil(capabilities["_meta"])
+    }
+
+    func testOlderCursorWithoutParameterizedOptionsReportsPersistedSelectionAsUnsupported() async throws {
+        let fixture = try makeFixture(
+            shape: "modern",
+            extraEnvironment: ["ACP_INCLUDE_MODEL": "1"],
+            providerID: .cursor
+        )
+        _ = try await fixture.controller.bootstrap()
+        let selection = ACPModelParameterSelection(
+            providerID: .cursor,
+            baseModelRaw: "model-a",
+            kind: .thinking,
+            configID: "Cursor.Thought-Level",
+            valueRaw: "High"
+        )
+        let report = try await fixture.controller.applySessionModelParameterSelections([selection])
+        await fixture.controller.shutdown()
+
+        XCTAssertTrue(report.applied.isEmpty)
+        XCTAssertEqual(report.skipped, [selection])
+        XCTAssertTrue(recordedMutationRequests(at: fixture.recordURL).isEmpty)
+    }
+
     func testSessionOpenRoutesInjectMCPAndUseModernModeConfiguration() async throws {
         let cases = [
             SessionOpenRouteCase(
@@ -1307,6 +1631,8 @@ final class ACPAgentSessionControllerModeConfigTests: XCTestCase {
         session_id = os.environ.get("ACP_SESSION_ID", "mode-config-session")
         current_mode = "base" if shape == "headless" else "ask"
         current_model = "Foo" if os.environ.get("ACP_MODEL_CASE_COLLISION") == "1" else "model-a"
+        current_thought = "medium"
+        current_fast = "false"
         mode_config_id = "permission_mode" if shape == "custom_id" else "mode"
         output_lock = threading.Lock()
         sync_events_path = os.environ.get("ACP_SYNC_EVENTS_PATH")
@@ -1406,10 +1732,41 @@ final class ACPAgentSessionControllerModeConfigTests: XCTestCase {
                 "options": model_choices
             }
 
+        def parameter_options():
+            if os.environ.get("ACP_INCLUDE_PARAMETERS") != "1":
+                return []
+            fast_option = {
+                "id": "fast" if os.environ.get("ACP_OBSERVED_FAST_SELECTOR") == "1" else "Cursor.Fast-Mode",
+                "name": "Fast Mode" if os.environ.get("ACP_OBSERVED_FAST_SELECTOR") == "1" else "Speed",
+                "category": "model_config",
+                "type": "select",
+                "currentValue": current_fast,
+                "options": [
+                    {"value": "false", "name": "Off" if os.environ.get("ACP_OBSERVED_FAST_SELECTOR") == "1" else "Standard"},
+                    {"value": "true", "name": "Fast"}
+                ]
+            }
+            return [
+                {
+                    "id": "Cursor.Thought-Level",
+                    "name": "Effort",
+                    "category": "thought_level",
+                    "type": "select",
+                    "currentValue": current_thought,
+                    "options": [
+                        {"value": "low", "name": "Low"},
+                        {"value": "medium", "name": "Medium"},
+                        {"value": "High", "name": "High"}
+                    ]
+                },
+                fast_option
+            ]
+
         def config_options(mode_value=None, include_mode=True, malformed_mode=False, model_value=None):
             result = []
             if os.environ.get("ACP_INCLUDE_MODEL") == "1":
                 result.append(model_option(model_value))
+            result.extend(parameter_options())
             if include_mode:
                 result.append(mode_option(mode_value, malformed_mode))
             return result
@@ -1545,6 +1902,10 @@ final class ACPAgentSessionControllerModeConfigTests: XCTestCase {
                     if os.environ.get("ACP_MODEL_RELEASE_FIFO"):
                         threading.Thread(target=delayed_model_response, args=(request.get("id"),), daemon=True).start()
                         continue
+                elif config_id == "Cursor.Thought-Level":
+                    current_thought = params.get("value")
+                elif config_id in ("Cursor.Fast-Mode", "fast"):
+                    current_fast = params.get("value")
                 else:
                     current_mode = params.get("value")
                 after_mode = os.environ.get("ACP_AFTER_SET_NOTIFICATION_MODE")
@@ -1663,6 +2024,18 @@ private struct ModeConfigFakeACPProvider: ACPAgentProvider {
     let mcpServers: [RepoPromptMCPServerConfiguration]
     var providerID: ACPProviderID = .openCode
     var normalizedUpdates: LockedStrings?
+
+    var supportsParameterizedModelPicker: Bool {
+        providerID == .cursor
+    }
+
+    func modelParameterKind(for input: ACPModelParameterClassificationInput) -> ACPModelParameterKind? {
+        switch input.category?.lowercased() {
+        case "thought_level": .thinking
+        case "model_config" where ["Cursor.Fast-Mode", "fast"].contains(input.configID): .speed
+        default: nil
+        }
+    }
 
     func support(for request: ACPRunRequest) async -> ACPSupportResult {
         .supported

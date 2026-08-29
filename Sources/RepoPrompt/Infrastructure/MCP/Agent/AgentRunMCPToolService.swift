@@ -183,6 +183,10 @@ private let agentRunExpiredHandleRecoveryNote = [
 struct AgentRunMCPToolService {
     typealias RequestMetadata = MCPServerViewModel.RequestMetadata
     typealias HeartbeatOperation = @Sendable () async throws -> Value
+    typealias CursorModelParameterSnapshotProvider = (
+        _ workspacePath: String?,
+        _ modelRaw: String
+    ) async -> ACPDiscoveredSessionModels?
 
     static func requireWritableWorkspaceAuthority(_ issue: DomainWorkspaceAuthorityIssue?) throws {
         guard let issue else { return }
@@ -260,6 +264,13 @@ struct AgentRunMCPToolService {
     var beginAgentRunWait: (_ metadata: RequestMetadata, _ sessionIDs: Set<UUID>, _ timeoutSeconds: TimeInterval?) async -> AgentRunWaitScopeRegistration? = { _, _, _ in nil }
     var endAgentRunWait: (_ token: UUID, _ completion: AgentRunWaitScopeCompletion) async -> Void = { _, _ in }
     let startRun: StartRun
+    var cursorModelParameterSnapshot: CursorModelParameterSnapshotProvider = { workspacePath, modelRaw in
+        await CursorACPModelPollingService.shared.modelParameterSnapshot(
+            for: modelRaw,
+            workspacePath: workspacePath
+        )
+    }
+
     var currentSnapshotProvider: (@Sendable (_ sessionID: UUID, _ agentModeVM: AgentModeViewModel) async -> AgentRunMCPSnapshot?)?
     #if DEBUG
         var testAgentModeViewModel: AgentModeViewModel?
@@ -404,6 +415,19 @@ struct AgentRunMCPToolService {
             defaultTaskLabel: defaultTaskLabel,
             availability: targetWindow.apiSettingsViewModel.agentModeAvailabilityContext,
             workspaceID: workspace.id
+        )
+        let cursorSnapshot: ACPDiscoveredSessionModels? = if selection.agentRaw == AgentProviderKind.cursor.rawValue,
+                                                             let modelRaw = selection.modelRaw
+        {
+            await cursorModelParameterSnapshot(workspace.repoPaths.first, modelRaw)
+        } else {
+            nil
+        }
+        let modelParameterSelections = try AgentMCPModelParameterSupport.resolve(
+            value: args["model_parameters"],
+            agent: selection.agentRaw.flatMap { AgentProviderKind(rawValue: $0) },
+            modelRaw: selection.modelRaw,
+            snapshot: cursorSnapshot
         )
 
         #if DEBUG
@@ -664,6 +688,12 @@ struct AgentRunMCPToolService {
                 }
             #endif
             providerDispatchAttempted = true
+            try agentModeVM.mcpStageModelParameterSelections(
+                tabID: target.tabID,
+                agentRaw: selection.agentRaw,
+                modelRaw: selection.modelRaw,
+                selections: modelParameterSelections
+            )
             outcome = try await startRun(
                 target,
                 message,
@@ -2213,6 +2243,7 @@ struct AgentRunMCPToolService {
         let failureReason = object["failure_reason"]?.stringValue.flatMap(AgentRunMCPSnapshot.FailureReason.init(rawValue:))
         let worktreeBindings = try worktreeBindings(from: object)
         let activeWorktreeMerges = try activeWorktreeMerges(from: object)
+        let modelParameterSelections = try modelParameterSelections(from: agent)
         return AgentRunMCPSnapshot(
             sessionID: sessionID,
             runID: runID,
@@ -2222,6 +2253,7 @@ struct AgentRunMCPToolService {
             agentDisplayName: agent?["name"]?.stringValue,
             modelRaw: agent?["model"]?.stringValue,
             reasoningEffortRaw: agent?["reasoning_effort"]?.stringValue,
+            modelParameterSelections: modelParameterSelections,
             status: status,
             statusText: object["status_text"]?.stringValue,
             latestAssistantPreview: object["assistant_text"]?.stringValue,
@@ -2234,6 +2266,35 @@ struct AgentRunMCPToolService {
             worktreeBindings: worktreeBindings,
             appActiveWorktreeMerges: activeWorktreeMerges
         )
+    }
+
+    private func modelParameterSelections(
+        from agent: [String: Value]?
+    ) throws -> [AgentRunMCPSnapshot.ModelParameterSelection] {
+        guard let raw = agent?["model_parameters"] else { return [] }
+        guard let values = raw.arrayValue else {
+            throw MCPError.internalError("Agent run snapshot model parameters were malformed.")
+        }
+        return try values.enumerated().map { index, value in
+            guard let object = value.objectValue,
+                  let providerID = object["provider_id"]?.stringValue,
+                  let baseModelRaw = object["base_model"]?.stringValue,
+                  let kind = object["kind"]?.stringValue,
+                  let configID = object["config_id"]?.stringValue,
+                  let valueRaw = object["value"]?.stringValue
+            else {
+                throw MCPError.internalError(
+                    "Agent run snapshot model_parameters[\(index)] was malformed."
+                )
+            }
+            return AgentRunMCPSnapshot.ModelParameterSelection(
+                providerID: providerID,
+                baseModelRaw: baseModelRaw,
+                kind: kind,
+                configID: configID,
+                valueRaw: valueRaw
+            )
+        }
     }
 
     private func hookGate(from object: [String: Value]) -> AgentRunMCPSnapshot.HookGate? {

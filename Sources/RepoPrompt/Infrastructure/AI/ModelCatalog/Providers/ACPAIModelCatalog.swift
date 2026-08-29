@@ -20,17 +20,21 @@ struct ACPDynamicProviderRecord: Codable, Hashable {
     /// Optional so records persisted before effort support decode unchanged.
     var currentEffortRaw: String? = nil
     let options: [ACPDynamicModelRecord]
+    /// Optional for backward-compatible decode of model-only registry records.
+    var modelParameterSets: [ACPModelParameterSet]? = nil
 
     init(
         providerID: String,
         currentModelRaw: String?,
         currentEffortRaw: String? = nil,
-        options: [ACPDynamicModelRecord]
+        options: [ACPDynamicModelRecord],
+        modelParameterSets: [ACPModelParameterSet] = []
     ) {
         self.providerID = providerID
         self.currentModelRaw = currentModelRaw
         self.currentEffortRaw = currentEffortRaw
         self.options = options
+        self.modelParameterSets = modelParameterSets
     }
 }
 
@@ -100,7 +104,8 @@ enum ACPDynamicModelStore {
             providerID: providerID.rawValue,
             currentModelRaw: normalizedCurrentModelRaw(snapshot.currentModelRaw, options: options),
             currentEffortRaw: snapshot.currentEffortRaw,
-            options: options
+            options: options,
+            modelParameterSets: canonicalParameterSets(snapshot.modelParameterSets, options: options)
         )
     }
 
@@ -111,8 +116,57 @@ enum ACPDynamicModelStore {
         return ACPDiscoveredSessionModels(
             options: options,
             currentModelRaw: currentModelRaw,
-            currentEffortRaw: record.currentEffortRaw
+            currentEffortRaw: record.currentEffortRaw,
+            modelParameterSets: canonicalParameterSets(record.modelParameterSets ?? [], options: record.options)
         )
+    }
+
+    private static func canonicalParameterSets(
+        _ sets: [ACPModelParameterSet],
+        options: [ACPDynamicModelRecord]
+    ) -> [ACPModelParameterSet] {
+        var result: [ACPModelParameterSet] = []
+        for set in sets {
+            let modelMatches = options.filter {
+                $0.rawValue.caseInsensitiveCompare(set.baseModelRaw) == .orderedSame
+            }
+            guard modelMatches.count == 1, let canonicalModel = modelMatches.first?.rawValue else { continue }
+            var seenIDs = Set<String>()
+            let parameters = set.parameters.compactMap { definition -> ACPModelParameterDefinition? in
+                guard !definition.configID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                      seenIDs.insert(definition.configID).inserted
+                else { return nil }
+                var seenValues = Set<String>()
+                let choices = definition.choices.filter {
+                    !$0.rawValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        && seenValues.insert($0.rawValue).inserted
+                }
+                guard !choices.isEmpty else { return nil }
+                let canonical = ACPModelParameterDefinition(
+                    kind: definition.kind,
+                    configID: definition.configID,
+                    displayName: definition.displayName,
+                    choices: choices,
+                    currentValueRaw: definition.currentValueRaw
+                )
+                guard let current = canonical.choice(matching: definition.currentValueRaw) else { return nil }
+                return ACPModelParameterDefinition(
+                    kind: canonical.kind,
+                    configID: canonical.configID,
+                    displayName: canonical.displayName,
+                    choices: canonical.choices,
+                    currentValueRaw: current.rawValue
+                )
+            }.sorted {
+                if $0.kind.sortOrder != $1.kind.sortOrder {
+                    return $0.kind.sortOrder < $1.kind.sortOrder
+                }
+                return $0.configID < $1.configID
+            }
+            guard !parameters.isEmpty else { continue }
+            result.append(.init(baseModelRaw: canonicalModel, parameters: parameters))
+        }
+        return result.sorted { $0.baseModelRaw.lowercased() < $1.baseModelRaw.lowercased() }
     }
 
     private static func loadProviderRecords(defaults: UserDefaults) -> [ACPDynamicProviderRecord] {
@@ -356,7 +410,9 @@ enum ACPAIModelCatalog {
         } else {
             trimmed[...]
         }
-        return String(base).replacingOccurrences(of: " ", with: "-")
+        return String(base)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: " ", with: "-")
     }
 
     private static func staticCursorAutoModelOption() -> AgentModelOption {
