@@ -1575,10 +1575,22 @@
                 EditFlowPerf.Stage.WorkspaceDurability.flushWait,
                 EditFlowPerf.Stage.WorkspaceDurability.atomicWrite
             ]
+            let ownedStageNames = Set([
+                "EditFlow.ReadFile.AutoSelect.ResponseEnqueue",
+                "EditFlow.ReadFile.AutoSelect.CanonicalQueueWait",
+                "EditFlow.ReadFile.AutoSelect.CanonicalMutation",
+                "EditFlow.ReadFile.AutoSelect.CanonicalStoredCommit",
+                "EditFlow.ReadFile.AutoSelect.MirrorEnqueue",
+                "EditFlow.ReadFile.AutoSelect.MirrorQueueWait",
+                "EditFlow.ReadFile.AutoSelect.MirrorApply",
+                "EditFlow.ReadFile.AutoSelect.DrainWait",
+                "EditFlow.WorkspaceDurability.FlushWait",
+                "EditFlow.WorkspaceDurability.AtomicWrite"
+            ])
             for stage in samples {
                 EditFlowPerf.measure(stage, EditFlowPerf.Dimensions(outcome: "success", queueDepth: 1)) {}
             }
-            for event in [
+            let events: [StaticString] = [
                 EditFlowPerf.Lifecycle.ReadFileAutoSelect.enqueueAccepted,
                 EditFlowPerf.Lifecycle.ReadFileAutoSelect.canonicalApplyBegan,
                 EditFlowPerf.Lifecycle.ReadFileAutoSelect.mirrorScheduled,
@@ -1586,15 +1598,33 @@
                 EditFlowPerf.Lifecycle.ReadFileAutoSelect.drainEnded,
                 EditFlowPerf.Lifecycle.WorkspaceDurability.flushEnded,
                 EditFlowPerf.Lifecycle.WorkspaceDurability.writeEnded
-            ] {
+            ]
+            let ownedEventNames = Set([
+                "ReadFile.AutoSelect.EnqueueAccepted",
+                "ReadFile.AutoSelect.CanonicalApplyBegan",
+                "ReadFile.AutoSelect.MirrorScheduled",
+                "ReadFile.AutoSelect.MirrorApplyEnded",
+                "ReadFile.AutoSelect.DrainEnded",
+                "WorkspaceDurability.FlushEnded",
+                "WorkspaceDurability.WriteEnded"
+            ])
+            for event in events {
                 EditFlowPerf.lifecycleEvent(event, correlation: correlation, EditFlowPerf.Dimensions(outcome: "success"))
             }
 
             let snapshot = EditFlowPerf.debugCaptureSnapshot(finish: true)
-            XCTAssertEqual(snapshot.retainedSampleCount, samples.count)
-            XCTAssertEqual(snapshot.retainedLifecycleEventCount, 7)
-            XCTAssertTrue(snapshot.stages.allSatisfy { !$0.sanitizedDimensions.contains("/") })
-            XCTAssertTrue(snapshot.lifecycleEvents.allSatisfy { !$0.sanitizedDimensions.contains("/") })
+            let ownedRows = snapshot.stages.filter { ownedStageNames.contains($0.stageName) }
+            XCTAssertEqual(ownedRows.count, samples.count)
+            XCTAssertEqual(Set(ownedRows.map(\.stageName)), ownedStageNames)
+            XCTAssertTrue(ownedRows.allSatisfy { $0.sampleCount == 1 })
+            XCTAssertTrue(ownedRows.allSatisfy { $0.sanitizedDimensions == "outcome=success queueDepth=1" })
+
+            let ownedLifecycleEvents = snapshot.lifecycleEvents.filter { ownedEventNames.contains($0.eventName) }
+            XCTAssertEqual(ownedLifecycleEvents.count, events.count)
+            XCTAssertEqual(Set(ownedLifecycleEvents.map(\.eventName)), ownedEventNames)
+            XCTAssertTrue(ownedLifecycleEvents.allSatisfy { $0.sanitizedDimensions == "outcome=success" })
+            XCTAssertTrue(ownedRows.allSatisfy { !$0.sanitizedDimensions.contains("/") })
+            XCTAssertTrue(ownedLifecycleEvents.allSatisfy { !$0.sanitizedDimensions.contains("/") })
         }
 
         func testCaptureRejectsConcurrentStartAndFinishDisablesCapture() {
