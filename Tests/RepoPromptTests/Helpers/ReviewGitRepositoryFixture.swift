@@ -53,7 +53,7 @@ final class ReviewGitRepositoryFixture {
         _ = try runGit(["checkout", "-b", "main"], at: root)
     }
 
-    private func configureHermeticAttributesFile(at root: URL) throws {
+    func configureHermeticAttributesFile(at root: URL) throws {
         let attributesFile = root
             .appendingPathComponent(".git", isDirectory: true)
             .appendingPathComponent("info", isDirectory: true)
