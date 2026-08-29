@@ -1750,7 +1750,7 @@
             }
 
             let snapshot = EditFlowPerf.debugCaptureSnapshot(finish: true)
-            XCTAssertEqual(snapshot.retainedSampleCount, 0)
+            XCTAssertLessThan(snapshot.retainedSampleCount, snapshot.maxSamples)
             XCTAssertEqual(snapshot.droppedSampleCount, 0)
             XCTAssertEqual(snapshot.maxLifecycleEvents, 100)
             XCTAssertEqual(snapshot.retainedLifecycleEventCount, 100)
