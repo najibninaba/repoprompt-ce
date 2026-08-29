@@ -811,7 +811,9 @@ final class CodexManagedAuthRecoveryServiceTests: XCTestCase {
         _ = await abandonedRefresh.value
 
         let login = Task { await service.startManagedChatgptLogin { _ in } }
-        await Task.yield()
+        try await waitUntilAsync {
+            await service.refreshLoginWaiterCountForTesting() == 1
+        }
         XCTAssertEqual(unexpectedLoginClient.requestCount(method: "account/login/start"), 0)
 
         await laterRefreshStopGate.open()
@@ -1008,6 +1010,18 @@ final class CodexManagedAuthRecoveryServiceTests: XCTestCase {
             try await Task.sleep(nanoseconds: 1_000_000)
         }
         XCTAssertTrue(condition(), "Condition was not satisfied before timeout")
+    }
+
+    private func waitUntilAsync(
+        timeout: TimeInterval = 1,
+        condition: @escaping @Sendable () async -> Bool
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while await !condition(), Date() < deadline {
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        let satisfied = await condition()
+        XCTAssertTrue(satisfied, "Condition was not satisfied before timeout")
     }
 
     private static let browserStartResponse: [String: Any] = [
