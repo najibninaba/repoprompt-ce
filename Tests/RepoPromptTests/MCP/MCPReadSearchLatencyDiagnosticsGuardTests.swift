@@ -1664,28 +1664,40 @@
         }
 
         func testBoundedCaptureReportsDroppedSamplesAndSanitizedDimensions() throws {
-            switch EditFlowPerf.beginDebugCapture(label: "bounded", maxSamples: 100) {
-            case .started:
-                break
-            case .busy:
-                XCTFail("Capture should start.")
-            }
+            let maxSamples = 100
+            _ = startedCapture(label: "bounded", maxSamples: maxSamples)
+            let expectedStageName = "EditFlow.MCPToolCall.ProviderExecution"
+            let expectedDimensions = "tool=bounded_capture_probe status=ok"
 
-            for _ in 0 ..< 101 {
+            func recordOwnedSample() {
                 EditFlowPerf.measure(
                     EditFlowPerf.Stage.MCPToolCall.providerExecution,
-                    EditFlowPerf.Dimensions(toolName: "read_file", status: "ok")
+                    EditFlowPerf.Dimensions(toolName: "bounded_capture_probe", status: "ok")
                 ) {}
             }
 
+            recordOwnedSample()
+            while EditFlowPerf.debugCaptureSnapshot(finish: false).retainedSampleCount < maxSamples {
+                recordOwnedSample()
+            }
+
+            let atCapacity = EditFlowPerf.debugCaptureSnapshot(finish: false)
+            XCTAssertEqual(atCapacity.retainedSampleCount, atCapacity.maxSamples)
+            let ownedAtCapacity = try XCTUnwrap(atCapacity.stages.first {
+                $0.stageName == expectedStageName && $0.sanitizedDimensions == expectedDimensions
+            })
+
+            recordOwnedSample()
             let snapshot = EditFlowPerf.debugCaptureSnapshot(finish: true)
-            XCTAssertEqual(snapshot.retainedSampleCount, 100)
-            XCTAssertEqual(snapshot.droppedSampleCount, 1)
-            let aggregate = try XCTUnwrap(snapshot.stages.first)
-            XCTAssertEqual(aggregate.sampleCount, 100)
-            XCTAssertTrue(aggregate.sanitizedDimensions.contains("tool=read_file"))
-            XCTAssertFalse(aggregate.sanitizedDimensions.contains("/"))
-            XCTAssertFalse(aggregate.sanitizedDimensions.contains("namespace"))
+            XCTAssertEqual(snapshot.retainedSampleCount, snapshot.maxSamples)
+            XCTAssertGreaterThanOrEqual(snapshot.droppedSampleCount, atCapacity.droppedSampleCount + 1)
+            let ownedAfterOverflow = try XCTUnwrap(snapshot.stages.first {
+                $0.stageName == expectedStageName && $0.sanitizedDimensions == expectedDimensions
+            })
+            XCTAssertEqual(ownedAfterOverflow.sampleCount, ownedAtCapacity.sampleCount)
+            XCTAssertEqual(ownedAfterOverflow.sanitizedDimensions, expectedDimensions)
+            XCTAssertFalse(ownedAfterOverflow.sanitizedDimensions.contains("/"))
+            XCTAssertFalse(ownedAfterOverflow.sanitizedDimensions.contains("namespace"))
         }
 
         func testLifecycleTimelinePreservesCorrelationOrderingAndSanitizesDimensions() throws {

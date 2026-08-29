@@ -66,7 +66,7 @@ final class DirectHeadlessStdioTransportTests: XCTestCase {
         var failingInput = try PipeDescriptors.make()
         output = try PipeDescriptors.make()
         let readFailureTransport = MCPStdioServerTransport(
-            stdinFD: failingInput.read,
+            stdinFD: failingInput.write,
             stdoutFD: output.write,
             pollIntervalMilliseconds: 5,
             writeStallTimeout: .milliseconds(100)

@@ -689,7 +689,9 @@ final class CodexManagedAuthRecoveryServiceTests: XCTestCase {
         let refreshTask = Task { await service.refreshManagedAccount() }
         try await waitUntil { client.requestCount(method: "account/read") == 1 }
         let loginTask = Task { await service.startManagedChatgptLogin { _ in } }
-        await Task.yield()
+        try await waitUntilAsync {
+            await service.refreshLoginWaiterCountForTesting() == 1
+        }
 
         XCTAssertEqual(client.requestCount(method: "account/login/start"), 0)
         await refreshStopGate.open()
