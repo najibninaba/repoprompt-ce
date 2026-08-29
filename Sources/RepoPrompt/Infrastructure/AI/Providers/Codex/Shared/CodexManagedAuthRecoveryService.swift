@@ -253,6 +253,9 @@ actor CodexManagedAuthRecoveryService: CodexManagedAuthRecovering {
     private var inFlightLogout: InFlightLogout?
     private var latestManagedAccount: CodexManagedAccount?
     private var authMutationGeneration: UInt64 = 0
+    #if DEBUG
+        private var refreshLoginWaiterCount = 0
+    #endif
     private var deviceCodePresenters: [UUID: @MainActor @Sendable (CodexManagedChatgptDeviceCode, Bool) -> Void] = [:]
     private var currentDeviceCode: CodexManagedChatgptDeviceCode?
 
@@ -468,7 +471,13 @@ actor CodexManagedAuthRecoveryService: CodexManagedAuthRecovering {
 
             if !waitedForRefresh, let refresh = inFlightRefresh {
                 waitedForRefresh = true
+                #if DEBUG
+                    refreshLoginWaiterCount += 1
+                #endif
                 let refreshResult = await refresh.task.value
+                #if DEBUG
+                    refreshLoginWaiterCount -= 1
+                #endif
                 guard operationGeneration == authMutationGeneration else {
                     return .failed(message: "Codex sign-in was canceled because sign out started.")
                 }
@@ -511,6 +520,12 @@ actor CodexManagedAuthRecoveryService: CodexManagedAuthRecovering {
             return result
         }
     }
+
+    #if DEBUG
+        func refreshLoginWaiterCountForTesting() -> Int {
+            refreshLoginWaiterCount
+        }
+    #endif
 
     func logoutManagedAccount() async -> CodexManagedAuthLogoutResult {
         if let inFlightLogout {
