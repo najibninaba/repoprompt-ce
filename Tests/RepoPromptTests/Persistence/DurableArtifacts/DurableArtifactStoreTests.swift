@@ -367,12 +367,17 @@ final class DurableArtifactStoreTests: XCTestCase {
         let base = try DurableArtifactTestSupport.makeStore(at: root)
         let old = try DurableArtifactTestSupport.publish(base, identity: "old", records: ["a"])
         let new = try DurableArtifactTestSupport.publish(base, identity: "new", records: ["b"])
-        guard case let .published(pointer) = try base.compareAndSwapCatalog(
-            family: DurableArtifactTestSupport.family,
-            expectedRevision: nil,
-            target: old,
-            admittedByteUpperBound: 4096
-        ) else { return XCTFail("Expected initial catalog") }
+        let initial = try DurableArtifactTestSupport.catalogCASWithBusyRetry {
+            try base.compareAndSwapCatalog(
+                family: DurableArtifactTestSupport.family,
+                expectedRevision: nil,
+                target: old,
+                admittedByteUpperBound: 4096
+            )
+        }
+        guard case let .published(pointer) = initial else {
+            return XCTFail("Expected initial catalog, got \(initial)")
+        }
         let catalog = base.rootURL.appendingPathComponent(
             "v1/catalogs/\(DurableArtifactTestSupport.family.rawValue).catalog"
         )
