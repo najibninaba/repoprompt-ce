@@ -1171,8 +1171,6 @@ final class DirectHeadlessRuntimeConfigurationTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let launchRoot = fixture.launchWorktree.appendingPathComponent(relativeRoot, isDirectory: true)
         let alternateRoot = fixture.alternateWorktree.appendingPathComponent(relativeRoot, isDirectory: true)
-        try FileManager.default.removeItem(at: alternateRoot)
-        try FileManager.default.createSymbolicLink(at: alternateRoot, withDestinationURL: fixture.alternateWorktree)
         let service = DirectHeadlessMCPService(
             environment: [
                 "REPOPROMPT_MCP_HEADLESS_PROFILE": "worktree-symlink-fence-test",
@@ -1185,6 +1183,8 @@ final class DirectHeadlessRuntimeConfigurationTests: XCTestCase {
         )
         let prepared = try await service.prepareRuntime()
         addTeardownBlock { await service.teardown(prepared) }
+        try FileManager.default.removeItem(at: alternateRoot)
+        try FileManager.default.createSymbolicLink(at: alternateRoot, withDestinationURL: fixture.alternateWorktree)
 
         do {
             _ = try await prepared.context.prepareSessionRootOverlay(
@@ -1197,8 +1197,16 @@ final class DirectHeadlessRuntimeConfigurationTests: XCTestCase {
                 connectionID: prepared.connectionID
             )
             XCTFail("Expected a symlink-collapsed subdirectory root to fail closed")
+        } catch let error as MCPError {
+            guard case let .invalidRequest(message) = error else {
+                return XCTFail("Expected MCPError.invalidRequest, got code \(error.code)")
+            }
+            XCTAssertEqual(
+                message,
+                "selected worktree workspace root does not preserve the logical root fence: \(alternateRoot.path)"
+            )
         } catch {
-            XCTAssertTrue(String(describing: error).contains("does not preserve the logical root fence"))
+            XCTFail("Expected MCPError.invalidRequest, got \(error)")
         }
     }
 
@@ -1275,6 +1283,15 @@ final class DirectHeadlessRuntimeConfigurationTests: XCTestCase {
         )
         let prepared = try await service.prepareRuntime()
         addTeardownBlock { await service.teardown(prepared) }
+        let binding = DomainContextIdentity(
+            workspaceID: fixture.workspaceID,
+            contextID: fixture.contextID
+        )
+        let scope = try await prepared.runtime.standaloneScopeCoordinator.bind(
+            scopeID: prepared.scopeID,
+            context: binding
+        )
+        XCTAssertEqual(scope.binding, .context(binding, explicit: true))
 
         let processSnapshot = try await prepared.context.snapshot(connectionID: prepared.connectionID)
         XCTAssertEqual(processSnapshot.roots.map(\.path), processRoots.map(\.path))

@@ -4,6 +4,7 @@ import Foundation
 
 enum WorkspaceCodemapProvenanceTestSupportError: Error {
     case capabilityUnavailable
+    case capabilityUnavailableState(String)
     case sourceAuthorityUnavailable
     case bindingIdentityUnavailable
 }
@@ -51,15 +52,19 @@ final class WorkspaceCodemapAuthorityTestFixture: @unchecked Sendable {
             gitService: gitService,
             namespaceSalt: Data(repeating: 0xA7, count: GitBlobRepositoryNamespace.saltByteCount)
         )
-        let state = await capabilityService.resolve(
-            root: WorkspaceCodemapGitCapabilityRequest(
-                rootID: rootID,
-                rootLifetimeID: rootLifetimeID,
-                loadedRootURL: loadedRoot
-            )
+        let request = WorkspaceCodemapGitCapabilityRequest(
+            rootID: rootID,
+            rootLifetimeID: rootLifetimeID,
+            loadedRootURL: loadedRoot
         )
+        var state = await capabilityService.resolve(root: request)
+        for _ in 0 ..< 2 {
+            guard case .transientUnavailable = state else { break }
+            await Task.yield()
+            state = await capabilityService.reload(root: request)
+        }
         guard case let .eligible(capability) = state else {
-            throw WorkspaceCodemapProvenanceTestSupportError.capabilityUnavailable
+            throw WorkspaceCodemapProvenanceTestSupportError.capabilityUnavailableState(String(describing: state))
         }
         return WorkspaceCodemapAuthorityTestFixture(
             repositoryFixture: repositoryFixture,
