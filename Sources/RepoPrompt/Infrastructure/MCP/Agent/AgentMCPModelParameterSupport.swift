@@ -7,15 +7,8 @@ enum AgentMCPModelParameterSupport {
         let valueRaw: String
     }
 
-    static func definitions(
-        modelRaw: String,
-        snapshot: ACPDiscoveredSessionModels?
-    ) -> [ACPModelParameterDefinition] {
-        guard let snapshot,
-              let parameterSet = ACPModelParameterResolver.cursorParameterSet(
-                  selectedModelRaw: modelRaw,
-                  snapshot: snapshot
-              )
+    static func definitions(modelRaw: String) -> [ACPModelParameterDefinition] {
+        guard let parameterSet = CursorAIModelCatalog.parameterSet(for: modelRaw)
         else { return [] }
         return parameterSet.parameters.sorted {
             if $0.kind.sortOrder != $1.kind.sortOrder {
@@ -25,11 +18,8 @@ enum AgentMCPModelParameterSupport {
         }
     }
 
-    static func definitionValues(
-        modelRaw: String,
-        snapshot: ACPDiscoveredSessionModels?
-    ) -> [Value] {
-        definitions(modelRaw: modelRaw, snapshot: snapshot).map { definition in
+    static func definitionValues(modelRaw: String) -> [Value] {
+        definitions(modelRaw: modelRaw).map { definition in
             let object: [String: Value] = [
                 "kind": .string(definition.kind.rawValue),
                 "config_id": .string(definition.configID),
@@ -53,8 +43,7 @@ enum AgentMCPModelParameterSupport {
     static func resolve(
         value: Value?,
         agent: AgentProviderKind?,
-        modelRaw: String?,
-        snapshot: ACPDiscoveredSessionModels?
+        modelRaw: String?
     ) throws -> [ACPModelParameterSelection] {
         guard let value else { return [] }
         let requests = try parseRequests(value)
@@ -63,14 +52,10 @@ enum AgentMCPModelParameterSupport {
             throw MCPError.invalidParams("model_parameters are supported only for Cursor models.")
         }
         guard let modelRaw,
-              let snapshot,
-              let parameterSet = ACPModelParameterResolver.cursorParameterSet(
-                  selectedModelRaw: modelRaw,
-                  snapshot: snapshot
-              )
+              let parameterSet = CursorAIModelCatalog.parameterSet(for: modelRaw)
         else {
             throw MCPError.invalidParams(
-                "Cursor model parameter metadata is unavailable for the selected model. Call agent_manage.list_agents and use an advertised model_id."
+                "Cursor model parameter metadata is unavailable for the selected model. Use a model advertised by this RepoPrompt release."
             )
         }
 

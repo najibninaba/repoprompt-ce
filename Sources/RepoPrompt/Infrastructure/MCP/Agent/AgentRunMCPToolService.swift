@@ -183,10 +183,6 @@ private let agentRunExpiredHandleRecoveryNote = [
 struct AgentRunMCPToolService {
     typealias RequestMetadata = MCPServerViewModel.RequestMetadata
     typealias HeartbeatOperation = @Sendable () async throws -> Value
-    typealias CursorModelParameterSnapshotProvider = (
-        _ workspacePath: String?,
-        _ modelRaw: String
-    ) async -> ACPDiscoveredSessionModels?
 
     static func requireWritableWorkspaceAuthority(_ issue: DomainWorkspaceAuthorityIssue?) throws {
         guard let issue else { return }
@@ -264,12 +260,6 @@ struct AgentRunMCPToolService {
     var beginAgentRunWait: (_ metadata: RequestMetadata, _ sessionIDs: Set<UUID>, _ timeoutSeconds: TimeInterval?) async -> AgentRunWaitScopeRegistration? = { _, _, _ in nil }
     var endAgentRunWait: (_ token: UUID, _ completion: AgentRunWaitScopeCompletion) async -> Void = { _, _ in }
     let startRun: StartRun
-    var cursorModelParameterSnapshot: CursorModelParameterSnapshotProvider = { workspacePath, modelRaw in
-        await CursorACPModelPollingService.shared.modelParameterSnapshot(
-            for: modelRaw,
-            workspacePath: workspacePath
-        )
-    }
 
     var currentSnapshotProvider: (@Sendable (_ sessionID: UUID, _ agentModeVM: AgentModeViewModel) async -> AgentRunMCPSnapshot?)?
     #if DEBUG
@@ -416,18 +406,10 @@ struct AgentRunMCPToolService {
             availability: targetWindow.apiSettingsViewModel.agentModeAvailabilityContext,
             workspaceID: workspace.id
         )
-        let cursorSnapshot: ACPDiscoveredSessionModels? = if selection.agentRaw == AgentProviderKind.cursor.rawValue,
-                                                             let modelRaw = selection.modelRaw
-        {
-            await cursorModelParameterSnapshot(workspace.repoPaths.first, modelRaw)
-        } else {
-            nil
-        }
         let modelParameterSelections = try AgentMCPModelParameterSupport.resolve(
             value: args["model_parameters"],
             agent: selection.agentRaw.flatMap { AgentProviderKind(rawValue: $0) },
-            modelRaw: selection.modelRaw,
-            snapshot: cursorSnapshot
+            modelRaw: selection.modelRaw
         )
 
         #if DEBUG

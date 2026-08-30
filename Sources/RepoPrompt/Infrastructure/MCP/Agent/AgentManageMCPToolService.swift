@@ -4,10 +4,6 @@ import MCP
 @MainActor
 struct AgentManageMCPToolService {
     typealias RequestMetadata = MCPServerViewModel.RequestMetadata
-    typealias CursorModelParameterSnapshotProvider = (
-        _ workspacePath: String?,
-        _ modelRaw: String
-    ) async -> ACPDiscoveredSessionModels?
 
     static let maxCleanupSessionIDs = 256
 
@@ -64,7 +60,6 @@ struct AgentManageMCPToolService {
     let resolveSpawnParentSessionID: (_ metadata: RequestMetadata, _ targetWindow: WindowState) async -> UUID?
     let bindCurrentRequestToTab: (_ tabID: UUID, _ metadata: RequestMetadata) async throws -> Void
     let restrictDiscoveryToRoleLabels: @MainActor (_ workspaceID: UUID?) -> Bool
-    let cursorModelParameterSnapshot: CursorModelParameterSnapshotProvider
     let cleanupDependencies: CleanupDependencies
 
     init(
@@ -77,12 +72,6 @@ struct AgentManageMCPToolService {
         restrictDiscoveryToRoleLabels: @escaping @MainActor (_ workspaceID: UUID?) -> Bool = { workspaceID in
             GlobalSettingsStore.shared.effectiveAgentModelsProfile(workspaceID: workspaceID).restrictMCPAgentDiscoveryToRoleLabels
         },
-        cursorModelParameterSnapshot: @escaping CursorModelParameterSnapshotProvider = { workspacePath, modelRaw in
-            await CursorACPModelPollingService.shared.modelParameterSnapshot(
-                for: modelRaw,
-                workspacePath: workspacePath
-            )
-        },
         cleanupDependencies: CleanupDependencies = .live
     ) {
         self.toolName = toolName
@@ -92,7 +81,6 @@ struct AgentManageMCPToolService {
         self.resolveSpawnParentSessionID = resolveSpawnParentSessionID
         self.bindCurrentRequestToTab = bindCurrentRequestToTab
         self.restrictDiscoveryToRoleLabels = restrictDiscoveryToRoleLabels
-        self.cursorModelParameterSnapshot = cursorModelParameterSnapshot
         self.cleanupDependencies = cleanupDependencies
     }
 
@@ -147,7 +135,6 @@ struct AgentManageMCPToolService {
         let targetWindow = try requireTargetWindow()
         let availability = targetWindow.apiSettingsViewModel.agentModeAvailabilityContext
         let workspaceID = targetWindow.workspaceManager.activeWorkspace?.id
-        let workspacePath = targetWindow.workspaceManager.activeWorkspace?.repoPaths.first
         let rolesOnly = try parseBool(args["roles_only"], name: "roles_only", defaultValue: false)
         let restrictedDiscovery = restrictDiscoveryToRoleLabels(workspaceID)
         let omitAgentCatalog = rolesOnly || restrictedDiscovery
@@ -172,11 +159,7 @@ struct AgentManageMCPToolService {
                             obj["reasoning_effort"] = .string(effort.rawValue)
                         }
                         if entry.agent == .cursor {
-                            let cursorSnapshot = await cursorModelParameterSnapshot(workspacePath, target.modelRaw)
-                            let parameters = AgentMCPModelParameterSupport.definitionValues(
-                                modelRaw: target.modelRaw,
-                                snapshot: cursorSnapshot
-                            )
+                            let parameters = AgentMCPModelParameterSupport.definitionValues(modelRaw: target.modelRaw)
                             if !parameters.isEmpty {
                                 obj["model_parameters"] = .array(parameters)
                             }
@@ -191,11 +174,7 @@ struct AgentManageMCPToolService {
                         obj["model_id"] = .string(modelID)
                     }
                     if entry.agent == .cursor {
-                        let cursorSnapshot = await cursorModelParameterSnapshot(workspacePath, model.id)
-                        let parameters = AgentMCPModelParameterSupport.definitionValues(
-                            modelRaw: model.id,
-                            snapshot: cursorSnapshot
-                        )
+                        let parameters = AgentMCPModelParameterSupport.definitionValues(modelRaw: model.id)
                         if !parameters.isEmpty {
                             obj["model_parameters"] = .array(parameters)
                         }
@@ -521,19 +500,10 @@ struct AgentManageMCPToolService {
             workspaceID: targetWindow.workspaceManager.activeWorkspace?.id
         )
         let resolved = resolvedModelAndEffort(agentRaw: selection.agentRaw, modelRaw: selection.modelRaw, args: args)
-        let workspacePath = targetWindow.workspaceManager.activeWorkspace?.repoPaths.first
-        let cursorSnapshot: ACPDiscoveredSessionModels? = if resolved.agent == AgentProviderKind.cursor.rawValue,
-                                                             let modelRaw = resolved.model
-        {
-            await cursorModelParameterSnapshot(workspacePath, modelRaw)
-        } else {
-            nil
-        }
         let modelParameterSelections = try AgentMCPModelParameterSupport.resolve(
             value: args["model_parameters"],
             agent: resolved.agent.flatMap { AgentProviderKind(rawValue: $0) },
-            modelRaw: resolved.model,
-            snapshot: cursorSnapshot
+            modelRaw: resolved.model
         )
         let target = try await agentModeVM.mcpResolveOrCreateSessionTarget(
             tabID: nil,
@@ -622,16 +592,10 @@ struct AgentManageMCPToolService {
             let hydratedSession = await agentModeVM.ensureSessionReady(tabID: target.tabID)
             let parameterAgentRaw = resolved.agent ?? hydratedSession.selectedAgent.rawValue
             let parameterModelRaw = resolved.model ?? hydratedSession.selectedModelRaw
-            let cursorSnapshot: ACPDiscoveredSessionModels? = if parameterAgentRaw == AgentProviderKind.cursor.rawValue {
-                await cursorModelParameterSnapshot(workspace.repoPaths.first, parameterModelRaw)
-            } else {
-                nil
-            }
             let modelParameterSelections = try AgentMCPModelParameterSupport.resolve(
                 value: args["model_parameters"],
                 agent: AgentProviderKind(rawValue: parameterAgentRaw),
-                modelRaw: parameterModelRaw,
-                snapshot: cursorSnapshot
+                modelRaw: parameterModelRaw
             )
             // Resume adopts the live session's existing control registration. Re-registering the
             // same persistent session expires in-flight waiters and splits poll state from the UI.

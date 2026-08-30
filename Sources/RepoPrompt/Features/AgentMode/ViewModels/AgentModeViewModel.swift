@@ -327,7 +327,6 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             persistLastUsedModelIfNeeded(agent: selectedAgent, modelRaw: selectedModelRaw)
             refreshAutoEditPermissionGuidanceForActiveSession()
             updateDynamicModelPolling()
-            scheduleCursorModelParameterRefreshIfNeeded()
             syncAllActiveUIState()
         }
     }
@@ -367,7 +366,6 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             syncComposerUIState()
             syncRuntimeMetricsUIState()
             syncRunInteractionUIState()
-            scheduleCursorModelParameterRefreshIfNeeded()
         }
     }
 
@@ -593,7 +591,6 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
     private weak var runInteractionStateObserver: (any AgentModeRunInteractionStateObserving)?
     private let shouldManageCodexTooling: Bool
     private let usesProductionAgentDefaultsAndModelPolling: Bool
-    private let cursorModelParameterRefresher: CursorModelParameterRefresher
     let clearConsumedAttachmentsAfterProviderConsumption: Bool
     let applyEditsApprovalStore: ApplyEditsApprovalStore
     private lazy var runService: AgentModeRunService = makeRunService()
@@ -620,8 +617,6 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
     private var uiRefreshTask: Task<Void, Never>?
     private var openCodeModelsSubscriptionTask: Task<Void, Never>?
     private var cursorModelsSubscriptionTask: Task<Void, Never>?
-    private var cursorModelParameterRefreshTask: Task<Void, Never>?
-    private var cursorModelParameterUISnapshot: CursorModelParameterUISnapshot?
     private var grokBuildModelsSubscriptionTask: Task<Void, Never>?
     private var skillCatalogDeltaObservationTask: Task<Void, Never>?
     private var skillCatalogRefreshDebounceTask: Task<Void, Never>?
@@ -665,30 +660,6 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         _ tabIDs: Set<UUID>,
         _ workspace: WorkspaceModel
     ) async -> [UUID: Error]
-    typealias CursorModelParameterRefresher = @Sendable (
-        _ selectedModelRaw: String,
-        _ workspacePath: String?
-    ) async -> ACPDiscoveredSessionModels?
-
-    private struct CursorModelParameterUISnapshot {
-        let tabID: UUID
-        let sessionIdentity: ObjectIdentifier
-        let normalizedModelRaw: String
-        let workspacePath: String?
-        let models: ACPDiscoveredSessionModels
-
-        func matches(
-            session: TabSession,
-            selectedModelRaw: String,
-            workspacePath: String?
-        ) -> Bool {
-            tabID == session.tabID
-                && sessionIdentity == ObjectIdentifier(session)
-                && normalizedModelRaw == ACPAIModelCatalog.normalizedCursorModelAlias(selectedModelRaw)
-                && self.workspacePath == workspacePath
-        }
-    }
-
     private var saveInFlightSessionIDs: Set<UUID> = []
     private var saveRequestedWhileInFlightSessionIDs: Set<UUID> = []
     private var saveCompletionWaitersBySessionID: [UUID: [CheckedContinuation<Void, Never>]] = [:]
@@ -806,10 +777,6 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
 
         var test_isCursorModelPollingActive: Bool {
             cursorModelsSubscriptionTask != nil
-        }
-
-        func test_waitForCursorModelParameterRefresh() async {
-            await cursorModelParameterRefreshTask?.value
         }
 
         func test_setActiveSessionBindingsAreHydrated(_ value: Bool) {
@@ -1211,11 +1178,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
               let session = activeSession,
               !session.runState.isActive,
               !isMCPControlled(tabID: session.tabID),
-              let snapshot = cursorModelParameterSnapshot(for: session),
-              let parameterSet = ACPModelParameterResolver.cursorParameterSet(
-                  selectedModelRaw: selectedModelRaw,
-                  snapshot: snapshot
-              )
+              let parameterSet = ACPModelParameterResolver.cursorParameterSet(selectedModelRaw: selectedModelRaw)
         else { return }
         guard let definition = parameterSet.definition(configID: configID),
               let choice = definition.choice(matching: valueRaw)
@@ -1464,7 +1427,6 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             scheduleSave(for: session.tabID)
         }
         updateDynamicModelPolling()
-        scheduleCursorModelParameterRefreshIfNeeded()
         syncAllActiveUIState()
     }
 
@@ -1531,7 +1493,6 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
                     acpDynamicModelRevision &+= 1
                     syncSelectedACPModelFromRegistryIfNeeded(for: .cursor)
                     syncComposerUIState()
-                    scheduleCursorModelParameterRefreshIfNeeded()
                 }
             }
         }
@@ -1540,77 +1501,6 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
     private func stopCursorModelsSubscription() {
         cursorModelsSubscriptionTask?.cancel()
         cursorModelsSubscriptionTask = nil
-        cursorModelParameterRefreshTask?.cancel()
-        cursorModelParameterRefreshTask = nil
-        cursorModelParameterUISnapshot = nil
-    }
-
-    private func scheduleCursorModelParameterRefreshIfNeeded() {
-        cursorModelParameterRefreshTask?.cancel()
-        cursorModelParameterRefreshTask = nil
-        guard selectedAgent == .cursor,
-              let capturedSession = activeSession,
-              capturedSession.selectedAgent == .cursor
-        else {
-            cursorModelParameterUISnapshot = nil
-            return
-        }
-
-        let capturedAgent = selectedAgent
-        let capturedTabID = capturedSession.tabID
-        let capturedSessionIdentity = ObjectIdentifier(capturedSession)
-        let capturedModelRaw = selectedModelRaw
-        let normalizedCapturedModelRaw = ACPAIModelCatalog.normalizedCursorModelAlias(capturedModelRaw)
-        let capturedWorkspacePath = workspacePathProvider()
-        if let currentSnapshot = cursorModelParameterUISnapshot,
-           !currentSnapshot.matches(
-               session: capturedSession,
-               selectedModelRaw: capturedModelRaw,
-               workspacePath: capturedWorkspacePath
-           )
-        {
-            cursorModelParameterUISnapshot = nil
-            syncComposerUIState()
-        }
-        let refresher = cursorModelParameterRefresher
-        cursorModelParameterRefreshTask = Task { [weak self] in
-            let refreshedSnapshot = await refresher(capturedModelRaw, capturedWorkspacePath)
-            guard let refreshedSnapshot, !Task.isCancelled, let self else { return }
-            guard selectedAgent == capturedAgent,
-                  currentTabID == capturedTabID,
-                  let activeSession,
-                  ObjectIdentifier(activeSession) == capturedSessionIdentity,
-                  activeSession.selectedAgent == capturedAgent,
-                  ACPAIModelCatalog.normalizedCursorModelAlias(selectedModelRaw)
-                  == normalizedCapturedModelRaw,
-                  workspacePathProvider() == capturedWorkspacePath
-            else { return }
-            cursorModelParameterUISnapshot = CursorModelParameterUISnapshot(
-                tabID: capturedTabID,
-                sessionIdentity: capturedSessionIdentity,
-                normalizedModelRaw: normalizedCapturedModelRaw,
-                workspacePath: capturedWorkspacePath,
-                models: refreshedSnapshot
-            )
-            acpDynamicModelRevision &+= 1
-            syncComposerUIState()
-        }
-    }
-
-    func cursorModelParameterSnapshot(for session: TabSession?) -> ACPDiscoveredSessionModels? {
-        if let session,
-           selectedAgent == .cursor,
-           session.selectedAgent == .cursor,
-           let localSnapshot = cursorModelParameterUISnapshot,
-           localSnapshot.matches(
-               session: session,
-               selectedModelRaw: selectedModelRaw,
-               workspacePath: workspacePathProvider()
-           )
-        {
-            return localSnapshot.models
-        }
-        return AgentACPModelRegistry.shared.resolvedSnapshot(for: .cursor)
     }
 
     private func updateGrokBuildModelPolling(startPolling: Bool = true) {
@@ -1853,12 +1743,6 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         providerConversationCleanupRegistry = ProviderConversationCleanupRegistry()
         shouldManageCodexTooling = true
         usesProductionAgentDefaultsAndModelPolling = true
-        cursorModelParameterRefresher = { selectedModelRaw, workspacePath in
-            await CursorACPModelPollingService.shared.refreshModelParameters(
-                for: selectedModelRaw,
-                workspacePath: workspacePath
-            )
-        }
         codexCoordinator = CodexAgentModeCoordinator(
             windowID: windowID,
             runtimeWorkspacePathsProvider: codexRuntimeWorkspacePathsProvider,
@@ -2016,8 +1900,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             testCodexStallWatchdogRecoveryThreshold: TimeInterval? = nil,
             testCodexStallWatchdogInactivityThreshold: TimeInterval? = nil,
             testCodexTransportClosedRecoveryGraceInterval: TimeInterval? = nil,
-            testUsesProductionAgentDefaultsAndModelPolling: Bool = false,
-            testCursorModelParameterRefresher: @escaping CursorModelParameterRefresher = { _, _ in nil }
+            testUsesProductionAgentDefaultsAndModelPolling: Bool = false
         ) {
             windowID = testWindowID
             promptManager = nil
@@ -2053,7 +1936,6 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             self.providerConversationCleanupRegistry = providerConversationCleanupRegistry
             self.shouldManageCodexTooling = shouldManageCodexTooling
             usesProductionAgentDefaultsAndModelPolling = testUsesProductionAgentDefaultsAndModelPolling
-            cursorModelParameterRefresher = testCursorModelParameterRefresher
             let legacyWatchdogThreshold = testCodexStallWatchdogInactivityThreshold
             let testWatchdogProbeThreshold = testCodexStallWatchdogProbeThreshold ?? legacyWatchdogThreshold ?? 0
             let testWatchdogRecoveryThreshold: TimeInterval = if let explicitRecoveryThreshold = testCodexStallWatchdogRecoveryThreshold {
@@ -2163,7 +2045,6 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         uiRefreshTask?.cancel()
         openCodeModelsSubscriptionTask?.cancel()
         cursorModelsSubscriptionTask?.cancel()
-        cursorModelParameterRefreshTask?.cancel()
         skillCatalogDeltaObservationTask?.cancel()
         skillCatalogRefreshDebounceTask?.cancel()
         initialSystemWorkspaceSessionListRefreshDeferralFallbackTask?.cancel()
@@ -9499,7 +9380,6 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
 
         refreshAutoEditPermissionGuidanceForActiveSession(syncUI: false)
         updateDynamicModelPolling()
-        scheduleCursorModelParameterRefreshIfNeeded()
         syncAllActiveUIState(tabID: session.tabID)
     }
 

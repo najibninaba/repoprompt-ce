@@ -5,105 +5,76 @@ import XCTest
 
 @MainActor
 final class MCPWorkspaceScopedCursorModelParameterTests: XCTestCase {
-    func testPollingAuthorityKeepsWorkspaceDefinitionsOutOfGlobalRegistry() async throws {
-        let fixture = try makeFixture()
-        defer { fixture.cleanup() }
+    func testFixtureRootsUseUniqueUUIDPaths() throws {
+        let first = try makeFixture()
+        defer { first.cleanup() }
+        let second = try makeFixture()
+        defer { second.cleanup() }
 
-        let workspaceA = await fixture.polling.modelParameterSnapshot(
-            for: "grok",
-            workspacePath: fixture.rootA.path
-        )
-        let workspaceB = await fixture.polling.modelParameterSnapshot(
-            for: "grok",
-            workspacePath: fixture.rootB.path
-        )
-
-        XCTAssertEqual(parameterConfigIDs(workspaceA), ["workspace_a_effort"])
-        XCTAssertEqual(parameterConfigIDs(workspaceB), ["workspace_b_speed"])
-        XCTAssertEqual(
-            AgentACPModelRegistry.shared.resolvedSnapshot(for: .cursor)?.modelParameterSets,
-            []
-        )
+        XCTAssertNotEqual(first.root, second.root)
     }
 
-    func testAgentManageListCreateAndResumeUseActiveWorkspaceAuthority() async throws {
+    func testAgentManageListCreateAndResumeUseReleaseCatalogMetadata() async throws {
         let fixture = try makeFixture()
         defer { fixture.cleanup() }
-        let windowA = try await makeWindow(name: "Cursor MCP A", root: fixture.rootA)
-        defer { WindowStatesManager.shared.unregisterWindowState(windowA) }
+        let window = try await makeWindow(name: "Cursor MCP", root: fixture.root)
+        defer { WindowStatesManager.shared.unregisterWindowState(window) }
 
-        let serviceA = makeManageService(window: windowA, polling: fixture.polling)
-        let listedA = try await serviceA.execute(args: ["op": .string("list_agents")])
-        XCTAssertEqual(listedParameterConfigIDs(listedA, modelRaw: "grok"), ["workspace_a_effort"])
+        let service = makeManageService(window: window)
+        let listed = try await service.execute(args: ["op": .string("list_agents")])
+        XCTAssertEqual(
+            listedParameterConfigIDs(listed, modelRaw: "grok-4.6"),
+            ["Cursor.Thought-Level", "fast"]
+        )
 
-        let createdA = try await serviceA.execute(args: [
+        let modelID = cursorModelID
+        let created = try await service.execute(args: [
             "op": .string("create_session"),
-            "model_id": .string(cursorGrokModelID),
-            "model_parameters": request(configID: "workspace_a_effort", value: "a_high")
+            "model_id": .string(modelID),
+            "model_parameters": request([
+                ("Cursor.Thought-Level", "high"),
+                ("fast", "true")
+            ])
         ])
-        XCTAssertEqual(effectiveParameterConfigIDs(createdA), ["workspace_a_effort"])
-        let sessionA = try XCTUnwrap(createdA.objectValue?["session_id"]?.stringValue)
+        XCTAssertEqual(effectiveParameterConfigIDs(created), ["Cursor.Thought-Level", "fast"])
+        let sessionID = try XCTUnwrap(created.objectValue?["session_id"]?.stringValue)
 
-        let resumedA = try await serviceA.execute(args: [
+        let resumed = try await service.execute(args: [
             "op": .string("resume_session"),
-            "session_id": .string(sessionA),
-            "model_id": .string(cursorGrokModelID),
-            "model_parameters": request(configID: "workspace_a_effort", value: "a_low")
+            "session_id": .string(sessionID),
+            "model_id": .string(modelID),
+            "model_parameters": request([
+                ("Cursor.Thought-Level", "low"),
+                ("fast", "false")
+            ])
         ])
-        XCTAssertEqual(effectiveParameterConfigIDs(resumedA), ["workspace_a_effort"])
-
-        let windowB = try await makeWindow(name: "Cursor MCP B", root: fixture.rootB)
-        defer { WindowStatesManager.shared.unregisterWindowState(windowB) }
-        let serviceB = makeManageService(window: windowB, polling: fixture.polling)
-        let listedB = try await serviceB.execute(args: ["op": .string("list_agents")])
-        XCTAssertEqual(listedParameterConfigIDs(listedB, modelRaw: "grok"), ["workspace_b_speed"])
-
-        let createdB = try await serviceB.execute(args: [
-            "op": .string("create_session"),
-            "model_id": .string(cursorGrokModelID),
-            "model_parameters": request(configID: "workspace_b_speed", value: "b_fast")
-        ])
-        XCTAssertEqual(effectiveParameterConfigIDs(createdB), ["workspace_b_speed"])
-        XCTAssertEqual(
-            AgentACPModelRegistry.shared.resolvedSnapshot(for: .cursor)?.modelParameterSets,
-            []
-        )
+        XCTAssertEqual(effectiveParameterConfigIDs(resumed), ["Cursor.Thought-Level", "fast"])
     }
 
-    func testAgentRunStartValidatesAgainstTargetWorkspaceAuthority() async throws {
+    func testAgentRunStartRejectsUnknownReleaseCatalogParameter() async throws {
         let fixture = try makeFixture()
         defer { fixture.cleanup() }
-        let windowB = try await makeWindow(name: "Cursor MCP Run B", root: fixture.rootB)
-        defer { WindowStatesManager.shared.unregisterWindowState(windowB) }
-        var service = makeRunService(window: windowB)
-        service.cursorModelParameterSnapshot = { workspacePath, modelRaw in
-            await fixture.polling.modelParameterSnapshot(for: modelRaw, workspacePath: workspacePath)
-        }
+        let window = try await makeWindow(name: "Cursor MCP Run", root: fixture.root)
+        defer { WindowStatesManager.shared.unregisterWindowState(window) }
+        let service = makeRunService(window: window)
 
         do {
             _ = try await service.execute(args: [
                 "op": .string("start"),
-                "message": .string("Use workspace-local Cursor parameters."),
-                "model_id": .string(cursorGrokModelID),
-                "model_parameters": request(configID: "workspace_a_effort", value: "a_high")
+                "message": .string("Reject stale metadata."),
+                "model_id": .string(cursorModelID),
+                "model_parameters": request([("workspace_effort", "high")])
             ])
-            XCTFail("Expected workspace B to reject workspace A parameter metadata")
+            XCTFail("Expected stale parameter metadata to be rejected")
         } catch {
-            XCTAssertTrue(
-                String(describing: error).contains("workspace_a_effort"),
-                "Unexpected validation error: \(error)"
-            )
+            XCTAssertTrue(String(describing: error).contains("workspace_effort"))
         }
-        XCTAssertEqual(
-            AgentACPModelRegistry.shared.resolvedSnapshot(for: .cursor)?.modelParameterSets,
-            []
-        )
     }
 
     func testAgentRunFailedStartRestoresExistingSessionCursorParameters() async throws {
         let fixture = try makeFixture()
         defer { fixture.cleanup() }
-        let window = try await makeWindow(name: "Cursor MCP Run Rollback", root: fixture.rootA)
+        let window = try await makeWindow(name: "Cursor MCP Run Rollback", root: fixture.root)
         defer { WindowStatesManager.shared.unregisterWindowState(window) }
         let agentModeVM = window.agentModeViewModel
         let tabID = try XCTUnwrap(window.workspaceManager.activeWorkspace?.activeComposeTabID)
@@ -114,15 +85,15 @@ final class MCPWorkspaceScopedCursorModelParameterTests: XCTestCase {
             sessionName: nil
         )
         let sessionID = try XCTUnwrap(target.sessionID)
-        _ = try agentModeVM.mcpStageModelParameterSelections(
+        _ = try await agentModeVM.mcpStageModelParameterSelections(
             tabID: tabID,
             agentRaw: AgentProviderKind.cursor.rawValue,
-            modelRaw: "grok",
-            selections: [selection(value: "a_low")]
+            modelRaw: "grok-4.6",
+            selections: [selection(value: "low")]
         )
 
         var stagedValueAtFailure: String?
-        var service = makeRunService(
+        let service = makeRunService(
             window: window,
             targetTabID: tabID,
             beforeStartFailure: { viewModel, targetTabID in
@@ -130,35 +101,29 @@ final class MCPWorkspaceScopedCursorModelParameterTests: XCTestCase {
                     .acpModelParameterSelections.first?.valueRaw
             }
         )
-        service.cursorModelParameterSnapshot = { workspacePath, modelRaw in
-            await fixture.polling.modelParameterSnapshot(for: modelRaw, workspacePath: workspacePath)
-        }
 
         do {
             _ = try await service.execute(args: [
                 "op": .string("start"),
                 "message": .string("Fail after staging Cursor parameters."),
-                "model_id": .string(cursorGrokModelID),
-                "model_parameters": request(configID: "workspace_a_effort", value: "a_high")
+                "model_id": .string(cursorModelID),
+                "model_parameters": request([("Cursor.Thought-Level", "high")])
             ])
             XCTFail("Expected the injected provider start failure")
         } catch {
-            XCTAssertTrue(
-                String(describing: error).contains("Injected provider start failure"),
-                "Unexpected start error: \(error)"
-            )
+            XCTAssertTrue(String(describing: error).contains("Injected provider start failure"))
         }
 
         let retainedSession = agentModeVM.session(for: tabID)
-        XCTAssertEqual(stagedValueAtFailure, "a_high")
+        XCTAssertEqual(stagedValueAtFailure, "high")
         XCTAssertEqual(retainedSession.activeAgentSessionID, sessionID)
-        XCTAssertEqual(retainedSession.acpModelParameterSelections.first?.valueRaw, "a_low")
+        XCTAssertEqual(retainedSession.acpModelParameterSelections.first?.valueRaw, "low")
     }
 
     func testAgentRunFailedStartPreservesNewerCursorParameterSelection() async throws {
         let fixture = try makeFixture()
         defer { fixture.cleanup() }
-        let window = try await makeWindow(name: "Cursor MCP Run Concurrent Selection", root: fixture.rootA)
+        let window = try await makeWindow(name: "Cursor MCP Run Concurrent Selection", root: fixture.root)
         defer { WindowStatesManager.shared.unregisterWindowState(window) }
         let agentModeVM = window.agentModeViewModel
         let tabID = try XCTUnwrap(window.workspaceManager.activeWorkspace?.activeComposeTabID)
@@ -168,35 +133,32 @@ final class MCPWorkspaceScopedCursorModelParameterTests: XCTestCase {
             createIfNeeded: true,
             sessionName: nil
         )
-        _ = try agentModeVM.mcpStageModelParameterSelections(
+        _ = try await agentModeVM.mcpStageModelParameterSelections(
             tabID: tabID,
             agentRaw: AgentProviderKind.cursor.rawValue,
-            modelRaw: "grok",
-            selections: [selection(value: "a_low")]
+            modelRaw: "grok-4.6",
+            selections: [selection(value: "low")]
         )
 
-        var service = makeRunService(
+        let service = makeRunService(
             window: window,
             targetTabID: tabID,
             beforeStartFailure: { viewModel, targetTabID in
                 _ = try viewModel.mcpStageModelParameterSelections(
                     tabID: targetTabID,
                     agentRaw: AgentProviderKind.cursor.rawValue,
-                    modelRaw: "grok",
-                    selections: [self.selection(value: "a_newer")]
+                    modelRaw: "grok-4.6",
+                    selections: [self.selection(value: "medium")]
                 )
             }
         )
-        service.cursorModelParameterSnapshot = { workspacePath, modelRaw in
-            await fixture.polling.modelParameterSnapshot(for: modelRaw, workspacePath: workspacePath)
-        }
 
         do {
             _ = try await service.execute(args: [
                 "op": .string("start"),
                 "message": .string("Preserve a newer parameter selection after failure."),
-                "model_id": .string(cursorGrokModelID),
-                "model_parameters": request(configID: "workspace_a_effort", value: "a_high")
+                "model_id": .string(cursorModelID),
+                "model_parameters": request([("Cursor.Thought-Level", "high")])
             ])
             XCTFail("Expected the injected provider start failure")
         } catch {
@@ -205,40 +167,19 @@ final class MCPWorkspaceScopedCursorModelParameterTests: XCTestCase {
 
         XCTAssertEqual(
             agentModeVM.session(for: tabID).acpModelParameterSelections.first?.valueRaw,
-            "a_newer"
+            "medium"
         )
     }
 
-    private var cursorGrokModelID: String {
-        AgentModelSelectionID(agentRaw: AgentProviderKind.cursor.rawValue, modelRaw: "grok").rawValue
+    private var cursorModelID: String {
+        AgentModelSelectionID(agentRaw: AgentProviderKind.cursor.rawValue, modelRaw: "grok-4.6").rawValue
     }
 
     private func makeFixture() throws -> Fixture {
-        AgentACPModelRegistry.shared.test_reset(providerID: .cursor)
-        _ = AgentACPModelRegistry.shared.updateDiscoveredModels(
-            ACPDiscoveredSessionModels(
-                options: [
-                    AgentModelOption(
-                        rawValue: "grok",
-                        displayName: "Grok",
-                        description: nil,
-                        isPlaceholderDefault: false,
-                        isProviderDefault: true
-                    )
-                ],
-                currentModelRaw: "grok"
-            ),
-            for: .cursor
-        )
-        let rootA = FileManager.default.temporaryDirectory
-            .appendingPathComponent("rpce-cursor-mcp-a-\(UUID().uuidString)", isDirectory: true)
-        let rootB = FileManager.default.temporaryDirectory
-            .appendingPathComponent("rpce-cursor-mcp-b-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: rootA, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: rootB, withIntermediateDirectories: true)
-        let client = WorkspaceCursorModelDiscoveryClient(rootA: rootA.path, rootB: rootB.path)
-        let polling = CursorACPModelPollingService(client: client, intervalNanos: 60_000_000_000)
-        return Fixture(rootA: rootA, rootB: rootB, polling: polling)
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rpce-cursor-mcp-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return Fixture(root: root)
     }
 
     private func makeWindow(name: String, root: URL) async throws -> WindowState {
@@ -256,23 +197,20 @@ final class MCPWorkspaceScopedCursorModelParameterTests: XCTestCase {
         await window.workspaceManager.switchWorkspace(
             to: workspace,
             saveState: false,
-            reason: "workspaceScopedCursorMCPTests"
+            reason: "releaseGatedCursorMCPTests"
         )
         let activeWorkspace = try XCTUnwrap(window.workspaceManager.activeWorkspace)
         window.promptManager.loadComposeTabsFromWorkspace(activeWorkspace, syncPromptText: true)
         return window
     }
 
-    private func makeManageService(
-        window: WindowState,
-        polling: CursorACPModelPollingService
-    ) -> AgentManageMCPToolService {
+    private func makeManageService(window: WindowState) -> AgentManageMCPToolService {
         AgentManageMCPToolService(
             toolName: MCPWindowToolName.agentManage,
             captureRequestMetadata: {
                 MCPServerViewModel.RequestMetadata(
                     connectionID: UUID(),
-                    clientName: "workspace-scoped-cursor-model-parameters",
+                    clientName: "release-gated-cursor-model-parameters",
                     windowID: window.windowID
                 )
             },
@@ -280,10 +218,7 @@ final class MCPWorkspaceScopedCursorModelParameterTests: XCTestCase {
             resolveSpawnSourceTabID: { _ in nil },
             resolveSpawnParentSessionID: { _, _ in nil },
             bindCurrentRequestToTab: { _, _ in },
-            restrictDiscoveryToRoleLabels: { _ in false },
-            cursorModelParameterSnapshot: { workspacePath, modelRaw in
-                await polling.modelParameterSnapshot(for: modelRaw, workspacePath: workspacePath)
-            }
+            restrictDiscoveryToRoleLabels: { _ in false }
         )
     }
 
@@ -297,7 +232,7 @@ final class MCPWorkspaceScopedCursorModelParameterTests: XCTestCase {
             captureRequestMetadata: {
                 MCPServerViewModel.RequestMetadata(
                     connectionID: UUID(),
-                    clientName: "workspace-scoped-cursor-model-parameters",
+                    clientName: "release-gated-cursor-model-parameters",
                     windowID: window.windowID
                 )
             },
@@ -333,35 +268,27 @@ final class MCPWorkspaceScopedCursorModelParameterTests: XCTestCase {
                     workspaceID: workspace.id,
                     sourceAgentSessionID: nil,
                     sourceAgentRunID: nil,
-                    reason: .sourceCaptureFailed("Synthetic MCP workspace-authority fixture")
+                    reason: .sourceCaptureFailed("Synthetic MCP release-catalog fixture")
                 ))
             )
         }
         return service
     }
 
-    private func request(configID: String, value: String) -> Value {
-        .array([.object(["config_id": .string(configID), "value": .string(value)])])
+    private func request(_ pairs: [(String, String)]) -> Value {
+        .array(pairs.map { configID, value in
+            .object(["config_id": .string(configID), "value": .string(value)])
+        })
     }
 
     private func selection(value: String) -> ACPModelParameterSelection {
         ACPModelParameterSelection(
             providerID: .cursor,
-            baseModelRaw: "grok",
+            baseModelRaw: "grok-4.6",
             kind: .thinking,
-            configID: "workspace_a_effort",
+            configID: "Cursor.Thought-Level",
             valueRaw: value
         )
-    }
-
-    private func parameterConfigIDs(_ snapshot: ACPDiscoveredSessionModels?) -> [String] {
-        snapshot?.modelParameterSets.flatMap(\.parameters).map(\.configID) ?? []
-    }
-
-    private func effectiveParameterConfigIDs(_ value: Value) -> [String] {
-        value.objectValue?["agent"]?.objectValue?["model_parameters"]?.arrayValue?.compactMap {
-            $0.objectValue?["config_id"]?.stringValue
-        } ?? []
     }
 
     private func listedParameterConfigIDs(_ value: Value, modelRaw: String) -> [String] {
@@ -379,74 +306,17 @@ final class MCPWorkspaceScopedCursorModelParameterTests: XCTestCase {
         } ?? []
     }
 
+    private func effectiveParameterConfigIDs(_ value: Value) -> [String] {
+        value.objectValue?["agent"]?.objectValue?["model_parameters"]?.arrayValue?.compactMap {
+            $0.objectValue?["config_id"]?.stringValue
+        } ?? []
+    }
+
     private struct Fixture {
-        let rootA: URL
-        let rootB: URL
-        let polling: CursorACPModelPollingService
+        let root: URL
 
         func cleanup() {
-            Task { await polling.shutdown() }
-            AgentACPModelRegistry.shared.test_reset(providerID: .cursor)
-            try? FileManager.default.removeItem(at: rootA)
-            try? FileManager.default.removeItem(at: rootB)
+            try? FileManager.default.removeItem(at: root)
         }
-    }
-}
-
-private actor WorkspaceCursorModelDiscoveryClient: CursorACPModelDiscoveryClient {
-    let rootA: String
-    let rootB: String
-
-    init(rootA: String, rootB: String) {
-        self.rootA = rootA
-        self.rootB = rootB
-    }
-
-    func discoverModels(
-        workspacePath: String?,
-        preferredModelRaw: String?
-    ) async throws -> ACPDiscoveredSessionModels? {
-        let option = AgentModelOption(
-            rawValue: "grok",
-            displayName: "Grok",
-            description: nil,
-            isPlaceholderDefault: false,
-            isProviderDefault: true
-        )
-        guard preferredModelRaw != nil else {
-            return ACPDiscoveredSessionModels(options: [option], currentModelRaw: "grok")
-        }
-        let definition: ACPModelParameterDefinition
-        if workspacePath == rootA {
-            definition = .init(
-                kind: .thinking,
-                configID: "workspace_a_effort",
-                displayName: "Effort A",
-                choices: [
-                    .init(rawValue: "a_low", displayName: "Low A"),
-                    .init(rawValue: "a_high", displayName: "High A"),
-                    .init(rawValue: "a_newer", displayName: "Newer A")
-                ],
-                currentValueRaw: "a_low"
-            )
-        } else if workspacePath == rootB {
-            definition = .init(
-                kind: .speed,
-                configID: "workspace_b_speed",
-                displayName: "Speed B",
-                choices: [
-                    .init(rawValue: "b_standard", displayName: "Standard B"),
-                    .init(rawValue: "b_fast", displayName: "Fast B")
-                ],
-                currentValueRaw: "b_standard"
-            )
-        } else {
-            return ACPDiscoveredSessionModels(options: [option], currentModelRaw: "grok")
-        }
-        return ACPDiscoveredSessionModels(
-            options: [option],
-            currentModelRaw: "grok",
-            modelParameterSets: [.init(baseModelRaw: "grok", parameters: [definition])]
-        )
     }
 }

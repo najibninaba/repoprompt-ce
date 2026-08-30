@@ -833,20 +833,36 @@ final class ACPIntegratedAgentModeRunner {
         controller: ACPAgentSessionController,
         runID: UUID
     ) async throws {
-        guard runRequest.agentKind == .openCode || runRequest.agentKind == .cursor || runRequest.agentKind == .grokBuild else { return }
-        guard let model = runRequest.modelString?.trimmingCharacters(in: .whitespacesAndNewlines),
+        guard let model = try Self.explicitSelectedModel(
+            agentKind: runRequest.agentKind,
+            modelString: runRequest.modelString
+        ) else {
+            return
+        }
+        log("applying \(runRequest.agentKind.displayName) selected model=\(model)", runID: runID)
+        try await controller.setSessionModel(model)
+    }
+
+    private static func explicitSelectedModel(
+        agentKind: AgentProviderKind,
+        modelString: String?
+    ) throws -> String? {
+        guard agentKind == .openCode || agentKind == .cursor || agentKind == .grokBuild else { return nil }
+        guard let model = modelString?.trimmingCharacters(in: .whitespacesAndNewlines),
               !model.isEmpty,
               model.caseInsensitiveCompare(AgentModel.defaultModel.rawValue) != .orderedSame
         else {
-            return
+            return nil
         }
-        if runRequest.agentKind == .cursor,
+        if agentKind == .cursor,
            model.caseInsensitiveCompare(AgentModel.cursorAuto.rawValue) != .orderedSame,
-           AgentACPModelRegistry.shared.resolvedSnapshot(for: .cursor)?.contains(rawModel: model) != true
+           !CursorAIModelCatalog.contains(modelRaw: model)
         {
-            return
+            throw AIProviderError.invalidConfiguration(
+                detail: "Cursor model `\(model)` is not in this release's supported model catalog. Update RepoPrompt CE or choose Cursor Auto."
+            )
         }
-        if runRequest.agentKind == .grokBuild,
+        if agentKind == .grokBuild,
            AgentACPModelRegistry.shared.resolvedSnapshot(for: .grokBuild)?.contains(rawModel: model) != true
         {
             // Grok has no provider-side alias surface: an unknown concrete model fails the
@@ -855,8 +871,7 @@ final class ACPIntegratedAgentModeRunner {
                 detail: "Grok Build model `\(model)` is not in the discovered model set. Refresh Grok Build models and retry."
             )
         }
-        log("applying \(runRequest.agentKind.displayName) selected model=\(model)", runID: runID)
-        try await controller.setSessionModel(model)
+        return model
     }
 
     private func promptFailureErrorText(
@@ -1714,6 +1729,13 @@ final class ACPIntegratedAgentModeRunner {
             _ report: ACPModelParameterApplicationReport
         ) throws {
             try validateModelParameterApplicationReport(report)
+        }
+
+        static func testExplicitSelectedModel(
+            agentKind: AgentProviderKind,
+            modelString: String?
+        ) throws -> String? {
+            try explicitSelectedModel(agentKind: agentKind, modelString: modelString)
         }
     #endif
 

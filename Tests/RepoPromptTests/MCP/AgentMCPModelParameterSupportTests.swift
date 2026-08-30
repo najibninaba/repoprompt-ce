@@ -5,16 +5,13 @@ import XCTest
 
 final class AgentMCPModelParameterSupportTests: XCTestCase {
     func testCursorDefinitionsPreserveExactWireIdentifiersAndChoices() {
-        let definitions = AgentMCPModelParameterSupport.definitions(
-            modelRaw: "Grok",
-            snapshot: cursorSnapshot()
-        )
+        let definitions = AgentMCPModelParameterSupport.definitions(modelRaw: "grok-4.6")
 
         XCTAssertEqual(definitions.count, 2)
-        XCTAssertEqual(definitions[0].configID, "thought_level")
-        XCTAssertEqual(definitions[0].choices.map(\.rawValue), ["low", "high"])
-        XCTAssertEqual(definitions[1].configID, "model_config")
-        XCTAssertEqual(definitions[1].choices.map(\.rawValue), ["standard", "fast"])
+        XCTAssertEqual(definitions[0].configID, "Cursor.Thought-Level")
+        XCTAssertEqual(definitions[0].choices.map(\.rawValue), ["low", "medium", "high", "xhigh"])
+        XCTAssertEqual(definitions[1].configID, "fast")
+        XCTAssertEqual(definitions[1].choices.map(\.rawValue), ["false", "true"])
     }
 
     func testResolveRejectsUnknownConfigBeforeProducingSelections() throws {
@@ -25,8 +22,7 @@ final class AgentMCPModelParameterSupportTests: XCTestCase {
         XCTAssertThrowsError(try AgentMCPModelParameterSupport.resolve(
             value: requested,
             agent: .cursor,
-            modelRaw: "grok",
-            snapshot: cursorSnapshot()
+            modelRaw: "grok-4.6"
         )) { error in
             XCTAssertTrue(String(describing: error).contains("unknown"))
         }
@@ -34,14 +30,13 @@ final class AgentMCPModelParameterSupportTests: XCTestCase {
 
     func testResolveRejectsUnknownValueBeforeProducingSelections() throws {
         let requested: Value = .array([
-            .object(["config_id": .string("thought_level"), "value": .string("maximum")])
+            .object(["config_id": .string("Cursor.Thought-Level"), "value": .string("maximum")])
         ])
 
         XCTAssertThrowsError(try AgentMCPModelParameterSupport.resolve(
             value: requested,
             agent: .cursor,
-            modelRaw: "grok",
-            snapshot: cursorSnapshot()
+            modelRaw: "grok-4.6"
         )) { error in
             XCTAssertTrue(String(describing: error).contains("maximum"))
         }
@@ -49,86 +44,67 @@ final class AgentMCPModelParameterSupportTests: XCTestCase {
 
     func testResolvePreservesExactProviderWireValueAndCanonicalBase() throws {
         let requested: Value = .array([
-            .object(["config_id": .string("thought_level"), "value": .string("HIGH")]),
-            .object(["config_id": .string("model_config"), "value": .string("fast")])
+            .object(["config_id": .string("Cursor.Thought-Level"), "value": .string("HIGH")]),
+            .object(["config_id": .string("fast"), "value": .string("true")])
         ])
 
         let selections = try AgentMCPModelParameterSupport.resolve(
             value: requested,
             agent: .cursor,
-            modelRaw: "Grok [Default]",
-            snapshot: cursorSnapshot()
+            modelRaw: "Cursor Grok 4.6"
         )
 
-        XCTAssertEqual(selections.map(\.configID), ["thought_level", "model_config"])
-        XCTAssertEqual(selections.map(\.valueRaw), ["high", "fast"])
-        XCTAssertEqual(selections.map(\.baseModelRaw), ["grok", "grok"])
+        XCTAssertEqual(selections.map(\.configID), ["Cursor.Thought-Level", "fast"])
+        XCTAssertEqual(selections.map(\.valueRaw), ["high", "true"])
+        XCTAssertEqual(selections.map(\.baseModelRaw), ["grok-4.6", "grok-4.6"])
     }
 
-    func testResolvePreservesWhitespaceBearingProviderConfigID() throws {
-        let snapshot = ACPDiscoveredSessionModels(
-            options: [
-                AgentModelOption(
-                    rawValue: "grok",
-                    displayName: "Grok",
-                    description: nil,
-                    isPlaceholderDefault: false,
-                    isProviderDefault: true
-                )
-            ],
-            currentModelRaw: "grok",
-            modelParameterSets: [
-                .init(
-                    baseModelRaw: "grok",
-                    parameters: [
-                        .init(
-                            kind: .thinking,
-                            configID: " thought_level ",
-                            displayName: "Effort",
-                            choices: [.init(rawValue: "high", displayName: "High")],
-                            currentValueRaw: "high"
-                        )
-                    ]
-                )
-            ]
-        )
-
+    func testResolveCanonicalizesLegacyComposer2BaseModel() throws {
         let selections = try AgentMCPModelParameterSupport.resolve(
             value: .array([
-                .object(["config_id": .string(" thought_level "), "value": .string("high")])
+                .object(["config_id": .string("fast"), "value": .string("true")])
             ]),
             agent: .cursor,
-            modelRaw: "grok",
-            snapshot: snapshot
+            modelRaw: "composer-2"
         )
 
-        XCTAssertEqual(selections.first?.configID, " thought_level ")
+        XCTAssertEqual(selections.map(\.baseModelRaw), ["composer-2.5"])
+        XCTAssertEqual(selections.map(\.configID), ["fast"])
+        XCTAssertEqual(selections.map(\.valueRaw), ["true"])
+    }
+
+    func testResolveRejectsWhitespaceBearingProviderConfigID() throws {
+        XCTAssertThrowsError(try AgentMCPModelParameterSupport.resolve(
+            value: .array([
+                .object(["config_id": .string(" Cursor.Thought-Level "), "value": .string("high")])
+            ]),
+            agent: .cursor,
+            modelRaw: "grok-4.6"
+        ))
     }
 
     func testResolveRejectsDuplicateConfigIDs() throws {
         let requested: Value = .array([
-            .object(["config_id": .string("thought_level"), "value": .string("low")]),
-            .object(["config_id": .string("thought_level"), "value": .string("high")])
+            .object(["config_id": .string("Cursor.Thought-Level"), "value": .string("low")]),
+            .object(["config_id": .string("Cursor.Thought-Level"), "value": .string("high")])
         ])
 
         XCTAssertThrowsError(try AgentMCPModelParameterSupport.resolve(
             value: requested,
             agent: .cursor,
-            modelRaw: "grok",
-            snapshot: cursorSnapshot()
+            modelRaw: "grok-4.6"
         ))
     }
 
     func testNonCursorProviderRejectsModelParameters() throws {
         let requested: Value = .array([
-            .object(["config_id": .string("thought_level"), "value": .string("high")])
+            .object(["config_id": .string("Cursor.Thought-Level"), "value": .string("high")])
         ])
 
         XCTAssertThrowsError(try AgentMCPModelParameterSupport.resolve(
             value: requested,
             agent: .openCode,
-            modelRaw: "grok",
-            snapshot: cursorSnapshot()
+            modelRaw: "grok"
         ))
     }
 
@@ -197,48 +173,6 @@ final class AgentMCPModelParameterSupportTests: XCTestCase {
                 modelRaw: "Grok [Default]"
             ),
             [selections[0]]
-        )
-    }
-
-    private func cursorSnapshot() -> ACPDiscoveredSessionModels {
-        ACPDiscoveredSessionModels(
-            options: [
-                AgentModelOption(
-                    rawValue: "grok",
-                    displayName: "Grok",
-                    description: nil,
-                    isPlaceholderDefault: false,
-                    isProviderDefault: true
-                )
-            ],
-            currentModelRaw: "grok",
-            modelParameterSets: [
-                ACPModelParameterSet(
-                    baseModelRaw: "grok",
-                    parameters: [
-                        ACPModelParameterDefinition(
-                            kind: .thinking,
-                            configID: "thought_level",
-                            displayName: "Effort",
-                            choices: [
-                                .init(rawValue: "low", displayName: "Low"),
-                                .init(rawValue: "high", displayName: "High")
-                            ],
-                            currentValueRaw: "low"
-                        ),
-                        ACPModelParameterDefinition(
-                            kind: .speed,
-                            configID: "model_config",
-                            displayName: "Speed",
-                            choices: [
-                                .init(rawValue: "standard", displayName: "Standard"),
-                                .init(rawValue: "fast", displayName: "Fast")
-                            ],
-                            currentValueRaw: "standard"
-                        )
-                    ]
-                )
-            ]
         )
     }
 }

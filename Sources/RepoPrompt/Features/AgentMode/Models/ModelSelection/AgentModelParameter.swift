@@ -135,14 +135,24 @@ enum ACPModelParameterResolver {
     static func resolve(
         providerID: ACPProviderID,
         selectedModelRaw: String,
-        snapshot: ACPDiscoveredSessionModels?,
         persistedSelections: [ACPModelParameterSelection]
     ) -> [ACPResolvedModelParameter] {
         guard providerID == .cursor,
-              let snapshot,
-              let parameterSet = cursorParameterSet(selectedModelRaw: selectedModelRaw, snapshot: snapshot)
+              let parameterSet = cursorParameterSet(selectedModelRaw: selectedModelRaw)
         else { return [] }
-        return parameterSet.parameters.sorted { $0.kind.sortOrder < $1.kind.sortOrder }.compactMap { definition in
+        return resolve(
+            parameterSet: parameterSet,
+            providerID: providerID,
+            persistedSelections: persistedSelections
+        )
+    }
+
+    private static func resolve(
+        parameterSet: ACPModelParameterSet,
+        providerID: ACPProviderID,
+        persistedSelections: [ACPModelParameterSelection]
+    ) -> [ACPResolvedModelParameter] {
+        parameterSet.parameters.sorted { $0.kind.sortOrder < $1.kind.sortOrder }.compactMap { definition in
             let definitionIdentity = ACPModelParameterIdentity(
                 providerID: providerID,
                 baseModelRaw: parameterSet.baseModelRaw,
@@ -163,18 +173,7 @@ enum ACPModelParameterResolver {
         }
     }
 
-    static func cursorParameterSet(
-        selectedModelRaw: String,
-        snapshot: ACPDiscoveredSessionModels
-    ) -> ACPModelParameterSet? {
-        let selectedAlias = ACPAIModelCatalog.normalizedCursorModelAlias(selectedModelRaw)
-        guard let option = snapshot.options.first(where: {
-            ACPAIModelCatalog.normalizedCursorModelAlias($0.rawValue) == selectedAlias
-                || ACPAIModelCatalog.normalizedCursorModelAlias($0.displayName) == selectedAlias
-        }) else { return nil }
-        return snapshot.modelParameterSets.first {
-            ACPAIModelCatalog.normalizedCursorModelAlias($0.baseModelRaw)
-                == ACPAIModelCatalog.normalizedCursorModelAlias(option.rawValue)
-        }
+    static func cursorParameterSet(selectedModelRaw: String) -> ACPModelParameterSet? {
+        CursorAIModelCatalog.parameterSet(for: selectedModelRaw)
     }
 }

@@ -61,7 +61,6 @@ extension AgentModeViewModel {
         let resolved = ACPModelParameterResolver.resolve(
             providerID: selectedAgent.acpProviderID ?? .openCode,
             selectedModelRaw: selectedModelRaw,
-            snapshot: cursorModelParameterSnapshot(for: session),
             persistedSelections: session?.acpModelParameterSelections ?? []
         )
         return resolved.map { parameter in

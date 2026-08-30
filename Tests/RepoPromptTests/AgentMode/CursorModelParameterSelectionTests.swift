@@ -224,64 +224,31 @@ final class CursorModelParameterSelectionTests: XCTestCase {
     }
 
     func testResolverUsesPersistedCursorValueAndHidesControlsForOtherProviders() {
-        let snapshot = makeSnapshot()
         let persisted = ACPModelParameterSelection(
             providerID: .cursor,
             baseModelRaw: "grok-4.6",
             kind: .thinking,
-            configID: "thought_level",
-            valueRaw: "high"
+            configID: "Cursor.Thought-Level",
+            valueRaw: "medium"
         )
 
         let resolved = ACPModelParameterResolver.resolve(
             providerID: .cursor,
             selectedModelRaw: "Grok 4.6",
-            snapshot: snapshot,
             persistedSelections: [persisted]
         )
         XCTAssertEqual(resolved.map(\.definition.kind), [.thinking, .speed])
-        XCTAssertEqual(resolved.map(\.selectedChoice.rawValue), ["high", "false"])
+        XCTAssertEqual(resolved.map(\.selectedChoice.rawValue), ["medium", "true"])
         XCTAssertTrue(ACPModelParameterResolver.resolve(
             providerID: .openCode,
             selectedModelRaw: "grok-4.6",
-            snapshot: snapshot,
             persistedSelections: [persisted]
         ).isEmpty)
-    }
-
-    func testDynamicModelStoreRoundTripsExactParameterMetadata() throws {
-        let original = makeSnapshot()
-        let parameters = try XCTUnwrap(original.modelParameterSets.first?.parameters)
-        let snapshot = ACPDiscoveredSessionModels(
-            options: original.options,
-            currentModelRaw: original.currentModelRaw,
-            modelParameterSets: [.init(
-                baseModelRaw: "grok-4.6",
-                parameters: [
-                    .init(
-                        kind: parameters[0].kind,
-                        configID: " thought_level ",
-                        displayName: parameters[0].displayName,
-                        choices: parameters[0].choices,
-                        currentValueRaw: parameters[0].currentValueRaw
-                    ),
-                    parameters[1]
-                ]
-            )]
-        )
-        let record = try XCTUnwrap(ACPDynamicModelStore.canonicalProviderRecord(
-            from: snapshot,
-            providerID: .cursor
-        ))
-        let restored = try XCTUnwrap(ACPDynamicModelStore.snapshot(from: record))
-        XCTAssertEqual(restored.modelParameterSets, snapshot.modelParameterSets)
     }
 
     func testActiveCursorRunLocksParameterControlsAndRejectsDefensiveSelection() {
         AgentACPModelRegistry.shared.test_reset(providerID: .cursor)
         defer { AgentACPModelRegistry.shared.test_reset(providerID: .cursor) }
-        XCTAssertTrue(AgentACPModelRegistry.shared.updateDiscoveredModels(makeSnapshot(), for: .cursor))
-
         let viewModel = makeViewModel()
         let tabID = UUID()
         viewModel.test_setCurrentTabIDOverride(tabID)
@@ -296,18 +263,18 @@ final class CursorModelParameterSelectionTests: XCTestCase {
         viewModel.applySessionToBindings(session)
 
         XCTAssertTrue(viewModel.makeComposerProps(tabID: tabID).areModelControlsDisabled)
-        viewModel.selectCursorModelParameter(configID: "thought_level", valueRaw: "high")
+        viewModel.selectCursorModelParameter(configID: "Cursor.Thought-Level", valueRaw: "high")
         XCTAssertTrue(session.acpModelParameterSelections.isEmpty)
 
         session.runState = .idle
         viewModel.updateBindingsFromSession(session)
         XCTAssertFalse(viewModel.makeComposerProps(tabID: tabID).areModelControlsDisabled)
-        viewModel.selectCursorModelParameter(configID: "thought_level", valueRaw: "high")
+        viewModel.selectCursorModelParameter(configID: "Cursor.Thought-Level", valueRaw: "high")
         XCTAssertEqual(session.acpModelParameterSelections.map(\.valueRaw), ["high"])
 
         viewModel.test_setMCPControlledTabIDs([tabID])
         XCTAssertTrue(viewModel.makeComposerProps(tabID: tabID).areModelControlsDisabled)
-        viewModel.selectCursorModelParameter(configID: "Cursor.Fast-Mode", valueRaw: "true")
+        viewModel.selectCursorModelParameter(configID: "fast", valueRaw: "true")
         XCTAssertEqual(session.acpModelParameterSelections.map(\.valueRaw), ["high"])
     }
 
@@ -329,13 +296,8 @@ final class CursorModelParameterSelectionTests: XCTestCase {
         XCTAssertEqual(control.accessibilityValue, "High")
     }
 
-    func testActiveCursorBindingRefreshesWorkspaceLocalParameterControls() async {
-        AgentACPModelRegistry.shared.test_reset(providerID: .cursor)
-        defer { AgentACPModelRegistry.shared.test_reset(providerID: .cursor) }
-        let probe = CursorModelParameterRefreshProbe()
-        let viewModel = makeViewModel(workspacePath: "/workspace-a") { modelRaw, workspacePath in
-            await probe.refresh(modelRaw: modelRaw, workspacePath: workspacePath)
-        }
+    func testSelectingKnownCursorModelPublishesLocalControlsSynchronously() {
+        let viewModel = makeViewModel(workspacePath: "/workspace-a")
         let tabID = UUID()
         viewModel.test_setCurrentTabIDOverride(tabID)
         defer { viewModel.test_setCurrentTabIDOverride(nil) }
@@ -347,28 +309,13 @@ final class CursorModelParameterSelectionTests: XCTestCase {
         viewModel.test_installLiveSession(session)
         viewModel.applySessionToBindings(session)
 
-        let didRequestParameters = await probe.waitForRequestCount(1)
-        XCTAssertTrue(didRequestParameters)
-        let requests = probe.requestsSnapshot()
-        XCTAssertEqual(
-            requests,
-            [.init(modelRaw: "grok-4.6", workspacePath: "/workspace-a")]
-        )
-        probe.completeRequest(at: 0, with: makeSnapshot())
-        await viewModel.test_waitForCursorModelParameterRefresh()
-
         let controls = viewModel.makeComposerProps(tabID: tabID).cursorModelParameterControls
         XCTAssertEqual(controls.map(\.displayName), ["Effort", "Speed"])
-        XCTAssertEqual(controls.map(\.selectedDisplayName), ["Medium", "Standard"])
+        XCTAssertEqual(controls.map(\.selectedDisplayName), ["High", "Fast"])
     }
 
-    func testStaleCursorParameterRefreshCannotOverwriteNewActiveModel() async {
-        AgentACPModelRegistry.shared.test_reset(providerID: .cursor)
-        defer { AgentACPModelRegistry.shared.test_reset(providerID: .cursor) }
-        let probe = CursorModelParameterRefreshProbe()
-        let viewModel = makeViewModel(workspacePath: "/workspace-a") { modelRaw, workspacePath in
-            await probe.refresh(modelRaw: modelRaw, workspacePath: workspacePath)
-        }
+    func testSwitchingKnownCursorModelsImmediatelyReplacesControls() {
+        let viewModel = makeViewModel(workspacePath: "/workspace-a")
         let tabID = UUID()
         viewModel.test_setCurrentTabIDOverride(tabID)
         defer { viewModel.test_setCurrentTabIDOverride(nil) }
@@ -376,111 +323,36 @@ final class CursorModelParameterSelectionTests: XCTestCase {
         let session = AgentModeViewModel.TabSession(tabID: tabID)
         session.hasLoadedPersistedState = true
         session.selectedAgent = .cursor
-        session.selectedModelRaw = "model-a"
+        session.selectedModelRaw = "grok-4.6"
         viewModel.test_installLiveSession(session)
         viewModel.applySessionToBindings(session)
-        let didRequestFirstModel = await probe.waitForRequestCount(1)
-        XCTAssertTrue(didRequestFirstModel)
-
-        session.selectedModelRaw = "model-b"
-        viewModel.applySessionToBindings(session)
-        let didRequestSecondModel = await probe.waitForRequestCount(2)
-        XCTAssertTrue(didRequestSecondModel)
-
-        probe.completeRequest(at: 0, with: makeSnapshot(modelRaw: "model-a"))
-        for _ in 0 ..< 10 {
-            await Task.yield()
-        }
-        XCTAssertTrue(viewModel.makeComposerProps(tabID: tabID).cursorModelParameterControls.isEmpty)
-
-        probe.completeRequest(at: 1, with: makeSnapshot(modelRaw: "model-b"))
-        await viewModel.test_waitForCursorModelParameterRefresh()
         XCTAssertEqual(
-            viewModel.makeComposerProps(tabID: tabID).cursorModelParameterControls.map(\.baseModelRaw),
-            ["model-b", "model-b"]
+            viewModel.makeComposerProps(tabID: tabID).cursorModelParameterControls.map(\.displayName),
+            ["Effort", "Speed"]
+        )
+
+        session.selectedModelRaw = "composer-2.5"
+        viewModel.applySessionToBindings(session)
+        XCTAssertEqual(
+            viewModel.makeComposerProps(tabID: tabID).cursorModelParameterControls.map(\.displayName),
+            ["Speed"]
         )
     }
 
-    private func makeViewModel(
-        workspacePath: String? = nil,
-        refresher: @escaping AgentModeViewModel.CursorModelParameterRefresher = { _, _ in nil }
-    ) -> AgentModeViewModel {
+    func testUnknownCursorModelHasNoControls() {
+        XCTAssertTrue(ACPModelParameterResolver.resolve(
+            providerID: .cursor,
+            selectedModelRaw: "future-cursor-model",
+            persistedSelections: []
+        ).isEmpty)
+    }
+
+    private func makeViewModel(workspacePath: String? = nil) -> AgentModeViewModel {
         AgentModeViewModel(
             testWorkspacePath: workspacePath,
             codexControllerFactory: { _, _, _, _, _, _ in
                 LifecycleNoopCodexController(recorder: LifecycleRecorder())
-            },
-            testCursorModelParameterRefresher: refresher
-        )
-    }
-
-    private func makeSnapshot(modelRaw: String = "grok-4.6") -> ACPDiscoveredSessionModels {
-        let effort = ACPModelParameterDefinition(
-            kind: .thinking,
-            configID: "thought_level",
-            displayName: "Effort",
-            choices: [
-                .init(rawValue: "medium", displayName: "Medium"),
-                .init(rawValue: "high", displayName: "High")
-            ],
-            currentValueRaw: "medium"
-        )
-        let speed = ACPModelParameterDefinition(
-            kind: .speed,
-            configID: "Cursor.Fast-Mode",
-            displayName: "Speed",
-            choices: [
-                .init(rawValue: "false", displayName: "Standard"),
-                .init(rawValue: "true", displayName: "Fast")
-            ],
-            currentValueRaw: "false"
-        )
-        return ACPDiscoveredSessionModels(
-            options: [.init(
-                rawValue: modelRaw,
-                displayName: modelRaw,
-                description: nil,
-                isDefault: true
-            )],
-            currentModelRaw: modelRaw,
-            modelParameterSets: [.init(baseModelRaw: modelRaw, parameters: [effort, speed])]
-        )
-    }
-}
-
-@MainActor
-private final class CursorModelParameterRefreshProbe {
-    struct Request: Equatable {
-        let modelRaw: String
-        let workspacePath: String?
-    }
-
-    private var requests: [Request] = []
-    private var continuations: [Int: CheckedContinuation<ACPDiscoveredSessionModels?, Never>] = [:]
-
-    func refresh(modelRaw: String, workspacePath: String?) async -> ACPDiscoveredSessionModels? {
-        let index = requests.count
-        requests.append(.init(modelRaw: modelRaw, workspacePath: workspacePath))
-        return await withCheckedContinuation { continuation in
-            continuations[index] = continuation
-        }
-    }
-
-    func requestsSnapshot() -> [Request] {
-        requests
-    }
-
-    func waitForRequestCount(_ count: Int) async -> Bool {
-        for _ in 0 ..< 3000 {
-            if requests.count >= count {
-                return true
             }
-            try? await Task.sleep(nanoseconds: 1_000_000)
-        }
-        return false
-    }
-
-    func completeRequest(at index: Int, with snapshot: ACPDiscoveredSessionModels?) {
-        continuations.removeValue(forKey: index)?.resume(returning: snapshot)
+        )
     }
 }

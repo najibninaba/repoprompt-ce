@@ -370,7 +370,7 @@ enum ACPAIModelCatalog {
     }
 
     static func cursorModelsFromStore() -> [AIModel] {
-        cursorModelOptionsFromStore().map { .cursorCustom(name: $0.rawValue) }
+        cursorModelOptionsForPicker().map { .cursorCustom(name: $0.rawValue) }
     }
 
     static func grokBuildModelsFromStore() -> [AIModel] {
@@ -385,15 +385,7 @@ enum ACPAIModelCatalog {
     }
 
     static func cursorModelOption(for rawValue: String) -> AgentModelOption? {
-        let normalized = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalized.isEmpty else { return nil }
-        if let discovered = AgentACPModelRegistry.shared.resolvedSnapshot(for: .cursor)?.options.first(where: {
-            $0.rawValue.caseInsensitiveCompare(normalized) == .orderedSame
-        }) {
-            return discovered
-        }
-        return cursorModelOptionsFromStore()
-            .first { $0.rawValue.caseInsensitiveCompare(normalized) == .orderedSame }
+        CursorAIModelCatalog.option(matching: rawValue)
     }
 
     static func grokBuildModelOption(for rawValue: String) -> AgentModelOption? {
@@ -415,20 +407,11 @@ enum ACPAIModelCatalog {
             .replacingOccurrences(of: " ", with: "-")
     }
 
-    private static func staticCursorAutoModelOption() -> AgentModelOption {
-        AgentModelOption(
-            rawValue: AgentModel.cursorAuto.rawValue,
-            displayName: AgentModel.cursorAuto.displayName,
-            description: AgentModel.cursorAuto.description,
-            isDefault: true
-        )
-    }
-
-    private static func cursorModelOptionsFromStore() -> [AgentModelOption] {
-        let fallback = staticCursorAutoModelOption()
-        let discovered = AgentACPModelRegistry.shared.resolvedSnapshot(for: .cursor)?.options ?? []
-        guard !discovered.isEmpty else { return [fallback] }
-        return [fallback] + discovered.filter { !isCursorAutoOption($0) }
+    /// Cursor discovery remains runtime authority for applying a selected model and
+    /// its parameters, but is deliberately not picker authority. The release-gated
+    /// catalog makes the non-Agent picker immediately available without an ACP session.
+    private static func cursorModelOptionsForPicker() -> [AgentModelOption] {
+        CursorAIModelCatalog.options
     }
 
     private static func grokBuildModelOptionsFromStore() -> [AgentModelOption] {
@@ -436,12 +419,5 @@ enum ACPAIModelCatalog {
             for: .grokBuild,
             availability: AgentModelCatalog.AvailabilityContext(grokBuildAvailable: true)
         )
-    }
-
-    private static func isCursorAutoOption(_ option: AgentModelOption) -> Bool {
-        let normalizedRaw = normalizedCursorModelAlias(option.rawValue)
-        let normalizedDisplayName = normalizedCursorModelAlias(option.displayName)
-        return normalizedRaw == AgentModel.cursorAuto.rawValue
-            || normalizedDisplayName == AgentModel.cursorAuto.rawValue
     }
 }

@@ -122,4 +122,35 @@ final class ACPIntegratedAgentModeRunnerExecutionTests: XCTestCase {
             XCTAssertTrue(error.localizedDescription.contains("fast=true"))
         }
     }
+
+    func testCursorKnownModelPassesReleaseCatalogValidationBeforePrompt() throws {
+        let model = try ACPIntegratedAgentModeRunner.testExplicitSelectedModel(
+            agentKind: .cursor,
+            modelString: "grok-4.6"
+        )
+
+        XCTAssertEqual(model, "grok-4.6")
+    }
+
+    func testCursorAutoAliasPassesReleaseCatalogValidationBeforePrompt() throws {
+        let model = try ACPIntegratedAgentModeRunner.testExplicitSelectedModel(
+            agentKind: .cursor,
+            modelString: AgentModel.cursorAuto.rawValue
+        )
+
+        XCTAssertEqual(model, AgentModel.cursorAuto.rawValue)
+    }
+
+    func testCursorUnknownConcreteModelFailsClosedBeforePrompt() {
+        XCTAssertThrowsError(try ACPIntegratedAgentModeRunner.testExplicitSelectedModel(
+            agentKind: .cursor,
+            modelString: "cursor-future-model"
+        )) { error in
+            guard case let AIProviderError.invalidConfiguration(detail) = error else {
+                return XCTFail("Expected invalid Cursor model configuration, got \(error)")
+            }
+            XCTAssertTrue(detail.contains("cursor-future-model"))
+            XCTAssertTrue(detail.contains("supported model catalog"))
+        }
+    }
 }
