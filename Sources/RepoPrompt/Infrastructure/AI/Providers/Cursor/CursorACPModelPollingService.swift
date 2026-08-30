@@ -17,14 +17,7 @@ struct CursorACPControllerModelDiscoveryClient: CursorACPModelDiscoveryClient {
     init(
         providerFactory: @escaping ProviderFactory = { agent, modelString in
             if agent == .cursor {
-                return CursorACPAgentProvider(
-                    config: CursorAgentConfig(
-                        enableDebugLogging: AgentRuntimeProviderService.enableDebugLogging,
-                        modelString: modelString,
-                        includeRepoPromptMCPServer: false,
-                        cleanupProjectMCPApproval: false
-                    )
-                )
+                return Self.makeCursorProvider(modelString: modelString)
             }
             return try await ACPAgentProviderFactory.makeProvider(for: agent, modelString: modelString)
         },
@@ -34,6 +27,23 @@ struct CursorACPControllerModelDiscoveryClient: CursorACPModelDiscoveryClient {
     ) {
         self.providerFactory = providerFactory
         self.controllerFactory = controllerFactory
+    }
+
+    #if DEBUG
+        static func test_makeCursorProvider(modelString: String?) -> CursorACPAgentProvider {
+            makeCursorProvider(modelString: modelString)
+        }
+    #endif
+
+    private static func makeCursorProvider(modelString: String?) -> CursorACPAgentProvider {
+        CursorACPAgentProvider(
+            config: CursorAgentConfig(
+                enableDebugLogging: AgentRuntimeProviderService.enableDebugLogging,
+                modelString: modelString,
+                includeRepoPromptMCPServer: false,
+                cleanupProjectMCPApproval: false
+            )
+        )
     }
 
     func discoverModels(
