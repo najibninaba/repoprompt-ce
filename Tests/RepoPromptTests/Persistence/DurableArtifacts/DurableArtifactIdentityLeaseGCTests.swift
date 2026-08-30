@@ -538,23 +538,27 @@ final class DurableArtifactIdentityLeaseGCTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let store = try DurableArtifactTestSupport.makeStore(at: root, now: now)
         _ = try DurableArtifactTestSupport.publish(store)
-        let firstGC = try store.garbageCollect(
-            protecting: [],
-            referenceEnumerator: nil,
-            policy: DurableArtifactGCPolicy(
-                quotaBytes: 0,
-                minimumOrphanAgeSeconds: 0,
-                quarantineGraceSeconds: 50
+        let firstGC = try DurableArtifactTestSupport.garbageCollectWithBusyRetry {
+            try store.garbageCollect(
+                protecting: [],
+                referenceEnumerator: nil,
+                policy: DurableArtifactGCPolicy(
+                    quotaBytes: 0,
+                    minimumOrphanAgeSeconds: 0,
+                    quarantineGraceSeconds: 50
+                )
             )
-        )
+        }
         XCTAssertEqual(firstGC.quarantinedObjectCount, 1)
         XCTAssertEqual(firstGC.deletedQuarantineCount, 0)
         let later = try DurableArtifactTestSupport.makeStore(at: root, now: now + 51)
-        let secondGC = try later.garbageCollect(
-            protecting: [],
-            referenceEnumerator: nil,
-            policy: DurableArtifactGCPolicy(quarantineGraceSeconds: 50, abandonedWorkAgeSeconds: 0)
-        )
+        let secondGC = try DurableArtifactTestSupport.garbageCollectWithBusyRetry {
+            try later.garbageCollect(
+                protecting: [],
+                referenceEnumerator: nil,
+                policy: DurableArtifactGCPolicy(quarantineGraceSeconds: 50, abandonedWorkAgeSeconds: 0)
+            )
+        }
         XCTAssertEqual(secondGC.deletedQuarantineCount, 1)
 
         let workDirectory = later.rootURL.appendingPathComponent("v1/work", isDirectory: true)
@@ -563,11 +567,13 @@ final class DurableArtifactIdentityLeaseGCTests: XCTestCase {
             XCTAssertTrue(FileManager.default.createFile(atPath: url.path, contents: Data("abandoned".utf8)))
             XCTAssertEqual(chmod(url.path, 0o600), 0)
         }
-        let cleanup = try later.garbageCollect(
-            protecting: [],
-            referenceEnumerator: nil,
-            policy: DurableArtifactGCPolicy(abandonedWorkAgeSeconds: 0)
-        )
+        let cleanup = try DurableArtifactTestSupport.garbageCollectWithBusyRetry {
+            try later.garbageCollect(
+                protecting: [],
+                referenceEnumerator: nil,
+                policy: DurableArtifactGCPolicy(abandonedWorkAgeSeconds: 0)
+            )
+        }
         XCTAssertEqual(cleanup.abandonedWorkRemovedCount, 3)
 
         let oldVersion = later.rootURL.appendingPathComponent("v0", isDirectory: true)

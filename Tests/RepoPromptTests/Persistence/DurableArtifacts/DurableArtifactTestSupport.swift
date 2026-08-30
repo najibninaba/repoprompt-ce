@@ -216,6 +216,28 @@ enum DurableArtifactTestSupport {
         }
     }
 
+    static func garbageCollectWithBusyRetry(
+        timeout: TimeInterval = 1,
+        file: StaticString = #filePath,
+        line: UInt = #line,
+        _ operation: () throws -> DurableArtifactGCReport
+    ) throws -> DurableArtifactGCReport {
+        let deadline = Date().addingTimeInterval(timeout)
+        while true {
+            let report = try operation()
+            guard report.busy else { return report }
+            guard Date() < deadline else {
+                XCTFail(
+                    "Garbage collection remained busy after \(timeout)s: \(String(describing: report))",
+                    file: file,
+                    line: line
+                )
+                return report
+            }
+            sched_yield()
+        }
+    }
+
     enum Failure: Error {
         case unexpectedPublication(DurableArtifactPublicationResult)
     }
