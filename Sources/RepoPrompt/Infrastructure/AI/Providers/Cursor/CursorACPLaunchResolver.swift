@@ -1,10 +1,16 @@
 import Foundation
 
-enum CursorACPLaunchCandidate: Equatable {
+enum CursorACPLaunchCandidate: CaseIterable, Equatable {
     case cursorAgentACP
+    case agentACP
 
     var command: String {
-        CLILaunchProfiles.cursor.commandName
+        switch self {
+        case .cursorAgentACP:
+            CLILaunchProfiles.cursor.commandName
+        case .agentACP:
+            "agent"
+        }
     }
 
     var launchArguments: [String] {
@@ -17,6 +23,7 @@ enum CursorACPLaunchCandidate: Equatable {
 }
 
 struct CursorACPResolvedLaunch: Equatable {
+    let candidate: CursorACPLaunchCandidate
     let command: String
     let arguments: [String]
     let additionalPathHints: [String]
@@ -36,18 +43,18 @@ enum CursorACPLaunchResolutionError: Error, Equatable, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .missingConfiguredCommand:
-            "Cursor Agent CLI launch requires an exact `cursor-agent` command or absolute path."
+            "Cursor Agent CLI launch requires `cursor-agent`, a verified `agent`, or an absolute path to either executable."
         case let .unsafeConfiguredCommand(command):
-            "Refusing unsafe Cursor ACP command `\(command)`. Configure the CLI-only `cursor-agent` executable."
+            "Refusing unsafe Cursor ACP command `\(command)`. Configure `cursor-agent` or the Cursor `agent` executable."
         case let .exactPathNotFound(command):
-            "Cursor Agent CLI was not found as a valid executable regular file for `\(command)`. Install `cursor-agent` or configure its absolute path."
+            "Cursor Agent CLI was not found as a valid executable regular file for `\(command)`. Install Cursor Agent CLI or configure an absolute `cursor-agent` or `agent` path."
         case let .noValidLaunchCandidate(command, failures, source):
             AgentCLILaunchDiagnostics.appendFallbackEnvironmentHint(
                 to: "Cursor Agent CLI was not found as a valid executable regular file for `\(command)`. Tried: \(failures.joined(separator: "; "))",
                 source: source
             )
         case let .environmentDiscoveryRequired(command):
-            "Cursor Agent CLI path discovery has not completed for `\(command)`. Run the Cursor ACP support preflight or configure an absolute `cursor-agent` path."
+            "Cursor Agent CLI discovery or identity verification has not completed for `\(command)`. Run the Cursor ACP support preflight before launching a generic `agent` entrypoint."
         case let .unsafeApplicationPath(path):
             "Refusing Cursor ACP executable inside an application bundle: \(path)"
         case let .unsafeCanonicalBasename(path):
@@ -58,18 +65,23 @@ enum CursorACPLaunchResolutionError: Error, Equatable, LocalizedError {
 
 final class CursorACPLaunchResolver: @unchecked Sendable {
     typealias EnvironmentProvider = @Sendable (_ enableDebugLogging: Bool) async -> ACPLaunchEnvironment
+    typealias SupplementalPathProvider = @Sendable (_ configuredPaths: [String]) -> [String]
 
     private let environmentProvider: EnvironmentProvider
+    private let supplementalPathProvider: SupplementalPathProvider
     private let probeMutex = AsyncMutex()
     private let lock = NSLock()
     private var cachedLaunchByKey: [String: CursorACPResolvedLaunch] = [:]
 
     convenience init(
-        environmentProvider: @escaping @Sendable (_ enableDebugLogging: Bool) async -> [String: String]
+        environmentProvider: @escaping @Sendable (_ enableDebugLogging: Bool) async -> [String: String],
+        supplementalPathProvider: @escaping SupplementalPathProvider = {
+            CLILaunchProfiles.providerSpecificPathsSupplementedWithNativeDefaults($0)
+        }
     ) {
         self.init(launchEnvironmentProvider: { enableDebugLogging in
             await ACPLaunchEnvironment(environment: environmentProvider(enableDebugLogging))
-        })
+        }, supplementalPathProvider: supplementalPathProvider)
     }
 
     init(
@@ -84,9 +96,13 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
                 environment: result.environment,
                 shellEnvironmentSource: result.shellEnvironmentSource
             )
+        },
+        supplementalPathProvider: @escaping SupplementalPathProvider = {
+            CLILaunchProfiles.providerSpecificPathsSupplementedWithNativeDefaults($0)
         }
     ) {
         environmentProvider = launchEnvironmentProvider
+        self.supplementalPathProvider = supplementalPathProvider
     }
 
     func resolvedLaunch(for config: CursorAgentConfig) throws -> CursorACPResolvedLaunch {
@@ -101,7 +117,17 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
             }
         }
 
+        let configuredCommand = try validatedConfiguredCommand(config)
+        if (configuredCommand as NSString).lastPathComponent.caseInsensitiveCompare(
+            CursorACPLaunchCandidate.agentACP.command
+        ) == .orderedSame {
+            throw CursorACPLaunchResolutionError.environmentDiscoveryRequired(configuredCommand)
+        }
+
         let launch = try resolveExplicitLaunch(for: config)
+        if launch.candidate == .agentACP {
+            throw CursorACPLaunchResolutionError.environmentDiscoveryRequired(configuredCommand)
+        }
         cache(launch, key: key)
         return launch
     }
@@ -118,40 +144,63 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
         do {
             // Resolve from the current effective environment on every support check. The cache only
             // bridges this successful probe to the immediately following launch configuration.
-            let launch = try await resolveLaunchForProbe(for: config)
-            let processConfig = CLIProcessConfiguration(
-                command: launch.command,
-                additionalPaths: [],
-                enableDebugLogging: config.enableDebugLogging,
-                shellLookupMode: .fallbackOnly
-            )
-            let result = try await CLIProcessRunner(config: processConfig).run(
-                args: CursorACPLaunchCandidate.cursorAgentACP.helpArguments,
-                stdin: nil,
-                outputMode: .none,
-                timeout: 10,
-                cancelChildOnTaskCancellation: true
-            )
-            guard result.status == 0 else {
-                return .unsupported(
-                    reason: "Cursor Agent CLI ACP preflight failed: `cursor-agent acp --help` exited with status \(result.status)."
+            let launches = try await resolveLaunchesForProbe(for: config)
+            var failures: [String] = []
+            for launch in launches {
+                try Task.checkCancellation()
+                let processConfig = CLIProcessConfiguration(
+                    command: launch.command,
+                    environment: launch.environment,
+                    additionalPaths: [],
+                    enableDebugLogging: config.enableDebugLogging,
+                    shellLookupMode: .fallbackOnly
                 )
+                let result: CLIProcessRunner.Result
+                do {
+                    result = try await CLIProcessRunner(config: processConfig).run(
+                        args: launch.candidate.helpArguments,
+                        stdin: nil,
+                        outputMode: .none,
+                        timeout: 10,
+                        additionalRemovedKeys: ["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"],
+                        cancelChildOnTaskCancellation: true
+                    )
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    failures.append("\(launch.command): \(error.localizedDescription)")
+                    continue
+                }
+                guard result.status == 0 else {
+                    failures.append(
+                        "Cursor Agent CLI ACP preflight failed: `\(launch.candidate.command) acp --help` exited with status \(result.status)."
+                    )
+                    continue
+                }
+
+                let stdout = String(data: result.stdout, encoding: .utf8) ?? ""
+                let stderr = String(data: result.stderr, encoding: .utf8) ?? ""
+                let combined = "\(stdout)\n\(stderr)"
+                guard advertisesCursorACP(combined, candidate: launch.candidate) else {
+                    failures.append(
+                        "Cursor Agent CLI ACP preflight failed: `\(launch.candidate.command) acp --help` did not prove Cursor ACP support."
+                    )
+                    continue
+                }
+
+                do {
+                    try launch.executableIdentity.validateForTrustedPathLaunch(atPath: launch.command)
+                } catch {
+                    failures.append("\(launch.command): \(error.localizedDescription)")
+                    continue
+                }
+                cache(launch, key: key)
+                return .supported
             }
 
-            let stdout = String(data: result.stdout, encoding: .utf8) ?? ""
-            let stderr = String(data: result.stderr, encoding: .utf8) ?? ""
-            let combined = "\(stdout)\n\(stderr)"
-            guard combined.localizedCaseInsensitiveContains("acp")
-                || combined.localizedCaseInsensitiveContains("agent client protocol")
-            else {
-                return .unsupported(
-                    reason: "Cursor Agent CLI ACP preflight failed: `cursor-agent acp --help` did not advertise ACP support."
-                )
-            }
-
-            try launch.executableIdentity.validateForTrustedPathLaunch(atPath: launch.command)
-            cache(launch, key: key)
-            return .supported
+            return .unsupported(
+                reason: failures.joined(separator: " ")
+            )
         } catch is CancellationError {
             invalidate(key: key)
             throw CancellationError()
@@ -161,22 +210,23 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
         }
     }
 
-    private func resolveLaunchForProbe(for config: CursorAgentConfig) async throws -> CursorACPResolvedLaunch {
+    private func resolveLaunchesForProbe(for config: CursorAgentConfig) async throws -> [CursorACPResolvedLaunch] {
         let configuredCommand = try validatedConfiguredCommand(config)
         let launchEnvironment = await environmentProvider(config.enableDebugLogging)
         let environment = launchEnvironment.environment
         try Task.checkCancellation()
         if configuredCommand.contains("/") {
-            return try resolveExplicitLaunch(
+            return try [resolveExplicitLaunch(
                 for: config,
                 environment: environment,
                 shellEnvironmentSource: launchEnvironment.shellEnvironmentSource
-            )
+            )]
         }
 
-        let effectiveHints = CLILaunchProfiles.providerSpecificPathsSupplementedWithNativeDefaults(config.additionalPathHints)
-        return try firstValidLaunch(
+        let effectiveHints = supplementalPathProvider(config.additionalPathHints)
+        return try validLaunches(
             candidates: launchCandidates(
+                configuredCommand: configuredCommand,
                 additionalPathHints: effectiveHints,
                 environment: environment
             ),
@@ -196,7 +246,7 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
         guard configuredCommand.contains("/") else {
             throw CursorACPLaunchResolutionError.environmentDiscoveryRequired(configuredCommand)
         }
-        let effectiveHints = CLILaunchProfiles.providerSpecificPathsSupplementedWithNativeDefaults(config.additionalPathHints)
+        let effectiveHints = supplementalPathProvider(config.additionalPathHints)
         do {
             return try validatedLaunch(
                 entryPath: CommandPathResolver.expandPath(configuredCommand, environment: environment),
@@ -223,12 +273,14 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
         guard !configuredCommand.isEmpty else {
             throw CursorACPLaunchResolutionError.missingConfiguredCommand
         }
-        let expectedCommand = CursorACPLaunchCandidate.cursorAgentACP.command
+        let supportedCommands = Set(CursorACPLaunchCandidate.allCases.map { $0.command.lowercased() })
+        let configuredBasename = (configuredCommand as NSString).lastPathComponent.lowercased()
+        guard supportedCommands.contains(configuredBasename) else {
+            throw CursorACPLaunchResolutionError.unsafeConfiguredCommand(configuredCommand)
+        }
         if configuredCommand.contains("/") {
-            guard (configuredCommand as NSString).lastPathComponent.caseInsensitiveCompare(expectedCommand) == .orderedSame else {
-                throw CursorACPLaunchResolutionError.unsafeConfiguredCommand(configuredCommand)
-            }
-        } else if configuredCommand.caseInsensitiveCompare(expectedCommand) != .orderedSame {
+            return configuredCommand
+        } else if configuredCommand.caseInsensitiveCompare(configuredBasename) != .orderedSame {
             throw CursorACPLaunchResolutionError.unsafeConfiguredCommand(configuredCommand)
         }
         return configuredCommand
@@ -241,8 +293,9 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
         environment: [String: String],
         preserveValidationError: Bool = false
     ) throws -> CursorACPResolvedLaunch {
+        let entryBasename = (entryPath as NSString).lastPathComponent.lowercased()
         guard entryPath.hasPrefix("/"),
-              (entryPath as NSString).lastPathComponent.caseInsensitiveCompare(CursorACPLaunchCandidate.cursorAgentACP.command) == .orderedSame
+              CursorACPLaunchCandidate.allCases.contains(where: { $0.command.lowercased() == entryBasename })
         else {
             throw CursorACPLaunchResolutionError.exactPathNotFound(configuredCommand)
         }
@@ -261,17 +314,35 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
         if (identity.canonicalPath as NSString).lastPathComponent.caseInsensitiveCompare("cursor") == .orderedSame {
             throw CursorACPLaunchResolutionError.unsafeCanonicalBasename(identity.canonicalPath)
         }
+        let canonicalBasename = (identity.canonicalPath as NSString).lastPathComponent
+        let candidate: CursorACPLaunchCandidate = canonicalBasename.caseInsensitiveCompare(
+            CursorACPLaunchCandidate.cursorAgentACP.command
+        ) == .orderedSame ? .cursorAgentACP : .agentACP
 
         return CursorACPResolvedLaunch(
+            candidate: candidate,
             command: identity.canonicalPath,
-            arguments: CursorACPLaunchCandidate.cursorAgentACP.launchArguments,
+            arguments: candidate.launchArguments,
             additionalPathHints: additionalPathHints,
             environment: environment,
             executableIdentity: identity
         )
     }
 
+    private func advertisesCursorACP(_ output: String, candidate: CursorACPLaunchCandidate) -> Bool {
+        switch candidate {
+        case .cursorAgentACP:
+            output.localizedCaseInsensitiveContains("acp")
+                || output.localizedCaseInsensitiveContains("agent client protocol")
+        case .agentACP:
+            output.localizedCaseInsensitiveContains("usage: agent acp")
+                && output.localizedCaseInsensitiveContains("cursor agent")
+                && output.localizedCaseInsensitiveContains("agent client protocol")
+        }
+    }
+
     private func launchCandidates(
+        configuredCommand: String,
         additionalPathHints: [String],
         environment: [String: String]
     ) -> [String] {
@@ -287,44 +358,56 @@ final class CursorACPLaunchResolver: @unchecked Sendable {
             candidates.append(expanded)
         }
 
-        append(
-            CommandPathResolver.resolve(
-                CursorACPLaunchCandidate.cursorAgentACP.command,
-                environment: environment,
-                additionalPaths: additionalPathHints,
-                preferredBasenames: CLILaunchProfiles.cursor.preferredBasenames,
-                shellLookupMode: .fallbackOnly
+        let configuredBasename = (configuredCommand as NSString).lastPathComponent.lowercased()
+        let launchCandidates: [CursorACPLaunchCandidate] = configuredBasename == CursorACPLaunchCandidate.agentACP.command
+            ? [.agentACP]
+            : [.cursorAgentACP]
+        for launchCandidate in launchCandidates {
+            append(
+                CommandPathResolver.resolve(
+                    launchCandidate.command,
+                    environment: environment,
+                    additionalPaths: additionalPathHints,
+                    preferredBasenames: [launchCandidate.command],
+                    shellLookupMode: .fallbackOnly
+                )
             )
-        )
-        for directory in CommandPathResolver.mergedPathComponents(
-            environment: environment,
-            additionalPaths: additionalPathHints
-        ) {
-            append((directory as NSString).appendingPathComponent(CursorACPLaunchCandidate.cursorAgentACP.command))
+            for directory in CommandPathResolver.mergedPathComponents(
+                environment: environment,
+                additionalPaths: additionalPathHints
+            ) {
+                append((directory as NSString).appendingPathComponent(launchCandidate.command))
+            }
         }
         return candidates
     }
 
-    private func firstValidLaunch(
+    private func validLaunches(
         candidates: [String],
         configuredCommand: String,
         additionalPathHints: [String],
         environment: [String: String],
         shellEnvironmentSource: ShellEnvironmentSource?
-    ) throws -> CursorACPResolvedLaunch {
+    ) throws -> [CursorACPResolvedLaunch] {
         var failures: [String] = []
+        var launches: [CursorACPResolvedLaunch] = []
         for candidate in candidates {
             do {
-                return try validatedLaunch(
-                    entryPath: candidate,
-                    configuredCommand: configuredCommand,
-                    additionalPathHints: additionalPathHints,
-                    environment: environment,
-                    preserveValidationError: true
+                try launches.append(
+                    validatedLaunch(
+                        entryPath: candidate,
+                        configuredCommand: configuredCommand,
+                        additionalPathHints: additionalPathHints,
+                        environment: environment,
+                        preserveValidationError: true
+                    )
                 )
             } catch {
                 failures.append("\(candidate): \(error.localizedDescription)")
             }
+        }
+        if !launches.isEmpty {
+            return launches
         }
         if failures.isEmpty {
             throw CursorACPLaunchResolutionError.exactPathNotFound(configuredCommand)
