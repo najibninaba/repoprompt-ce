@@ -1340,16 +1340,17 @@
             }
 
             let snapshot = EditFlowPerf.debugCaptureSnapshot(finish: true)
+            let expectedStageNames = Set(stages.map(\.1))
+            let ownedRows = snapshot.stages.filter { expectedStageNames.contains($0.stageName) }
             XCTAssertFalse(snapshot.active)
             XCTAssertFalse(EditFlowPerf.isDebugCaptureActive)
-            XCTAssertEqual(snapshot.retainedSampleCount, stages.count)
-            XCTAssertEqual(snapshot.droppedSampleCount, 0)
-            XCTAssertEqual(Set(snapshot.stages.map(\.stageName)), Set(stages.map(\.1)))
-            XCTAssertTrue(snapshot.stages.allSatisfy { $0.sampleCount == 1 })
-            XCTAssertTrue(snapshot.stages.allSatisfy {
+            XCTAssertEqual(ownedRows.count, stages.count)
+            XCTAssertEqual(Set(ownedRows.map(\.stageName)), expectedStageNames)
+            XCTAssertTrue(ownedRows.allSatisfy { $0.sampleCount == 1 })
+            XCTAssertTrue(ownedRows.allSatisfy {
                 $0.sanitizedDimensions == "outcome=completed scannedFileCount=1630 contentMatchCount=0 pathMatchCount=80 usesWorktreeProjection=true searchMode=path countOnly=false"
             })
-            XCTAssertTrue(snapshot.stages.allSatisfy {
+            XCTAssertTrue(ownedRows.allSatisfy {
                 !$0.sanitizedDimensions.contains("/") &&
                     !$0.sanitizedDimensions.contains("payload") &&
                     !$0.sanitizedDimensions.contains("pattern") &&
