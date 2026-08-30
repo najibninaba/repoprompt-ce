@@ -595,7 +595,9 @@ final class MCPSocketDescriptorHardeningTests: XCTestCase {
         let transport = try UnixSocketMCPTransport(connectedFD: descriptors[0])
         await transport.disconnect()
 
-        XCTAssertTrue(Self.isClosed(descriptors[0]))
+        let cleanup = await transport.debugCleanupSnapshot()
+        XCTAssertEqual(cleanup.descriptorCloseCount, 1)
+        XCTAssertFalse(cleanup.socketIsOwned)
         XCTAssertTrue(Self.peerObservedEOF(on: descriptors[1]))
     }
 
@@ -612,7 +614,9 @@ final class MCPSocketDescriptorHardeningTests: XCTestCase {
                 XCTFail("Expected forced existing-FD startup failure")
             } catch {}
 
-            XCTAssertTrue(Self.isClosed(descriptors[0]))
+            let cleanup = await transport.debugCleanupSnapshot()
+            XCTAssertEqual(cleanup.descriptorCloseCount, 1)
+            XCTAssertFalse(cleanup.socketIsOwned)
             XCTAssertTrue(Self.peerObservedEOF(on: descriptors[1]))
         #else
             throw XCTSkip("App transport startup-failure seam is DEBUG-only")

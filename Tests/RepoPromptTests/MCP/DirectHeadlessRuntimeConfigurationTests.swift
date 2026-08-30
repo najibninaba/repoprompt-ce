@@ -1397,23 +1397,34 @@ final class DirectHeadlessRuntimeConfigurationTests: XCTestCase {
         await prepared.context.rollbackSessionRootOverlay(nullPreparation)
 
         let malformedSessionID = UUID()
+        let validationContext = DirectHeadlessDomainContext(
+            runtime: prepared.runtime,
+            scopeID: prepared.scopeID
+        )
         do {
-            _ = try await prepared.context.prepareSessionRootOverlay(
+            _ = try await validationContext.prepareSessionRootOverlay(
                 sessionID: malformedSessionID,
                 sourceSessionID: parentID,
                 arguments: ["inherit_worktree": .string("sometimes")],
                 connectionID: prepared.connectionID
             )
             XCTFail("Expected malformed inherit_worktree to be rejected")
+        } catch let error as MCPError {
+            guard case let .invalidParams(message) = error else {
+                return XCTFail("Expected MCPError.invalidParams, got code \(error.code)")
+            }
+            XCTAssertEqual(message, "inherit_worktree must be a boolean.")
         } catch {
-            XCTAssertTrue(String(describing: error).contains("inherit_worktree must be a boolean"))
+            XCTFail("Expected MCPError.invalidParams, got \(error)")
         }
-        let malformedSnapshot = try await prepared.context.snapshot(
+        let malformedSnapshot = try await validationContext.snapshot(
             connectionID: prepared.connectionID,
             sessionID: malformedSessionID
         )
-        XCTAssertEqual(malformedSnapshot.roots.map(\.path), processRoots.map(\.path))
-        XCTAssertEqual(malformedSnapshot.activeRoot?.path, fixture.launchWorktree.path)
+        XCTAssertEqual(
+            malformedSnapshot.roots.map(\.path),
+            [fixture.canonicalRepo.path, secondary.canonicalRepo.path]
+        )
 
         let inheritedID = try await startAgent(
             prepared: prepared,
