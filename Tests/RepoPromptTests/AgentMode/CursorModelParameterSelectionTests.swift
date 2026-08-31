@@ -74,7 +74,7 @@ final class CursorModelParameterSelectionTests: XCTestCase {
             providerID: .cursor,
             baseModelRaw: "grok-4.6",
             kind: .thinking,
-            configID: "Cursor.Thought-Level",
+            configID: "effort",
             valueRaw: "high"
         )
         let distinctKind = ACPModelParameterSelection(
@@ -136,6 +136,33 @@ final class CursorModelParameterSelectionTests: XCTestCase {
                 .init(rawValue: "true", displayName: "Fast")
             ]
         )), .speed)
+    }
+
+    func testCursorClassifierUsesMultiLevelEffortAndReasoningButIgnoresBooleanThinking() {
+        let provider = CursorACPAgentProvider(config: CursorAgentConfig())
+        let effortChoices = [
+            ACPModelParameterChoice(rawValue: "low", displayName: "Low"),
+            ACPModelParameterChoice(rawValue: "high", displayName: "High")
+        ]
+
+        for configID in ["effort", "reasoning"] {
+            XCTAssertEqual(provider.modelParameterKind(for: .init(
+                configID: configID,
+                category: "thought_level",
+                displayName: configID.capitalized,
+                choices: effortChoices
+            )), .thinking, configID)
+        }
+
+        XCTAssertNil(provider.modelParameterKind(for: .init(
+            configID: "thinking",
+            category: "thought_level",
+            displayName: "Thinking",
+            choices: [
+                .init(rawValue: "false", displayName: "Off"),
+                .init(rawValue: "true", displayName: "On")
+            ]
+        )))
     }
 
     func testCursorClassifierRejectsModelModeAndAmbiguousParameters() {
@@ -246,6 +273,48 @@ final class CursorModelParameterSelectionTests: XCTestCase {
         ).isEmpty)
     }
 
+    func testEffectiveSelectionsCanonicalizeLegacyAliasesAndReplaceStaleValuesWithDisplayedDefaults() {
+        let stale = ACPModelParameterSelection(
+            providerID: .cursor,
+            baseModelRaw: "Grok 4.6",
+            kind: .thinking,
+            configID: "Cursor.Thought-Level",
+            valueRaw: "retired-effort"
+        )
+
+        let effective = ACPModelParameterResolver.effectiveSelections(
+            providerID: .cursor,
+            selectedModelRaw: "Grok 4.6",
+            persistedSelections: [stale]
+        )
+
+        XCTAssertEqual(effective.map(\.baseModelRaw), ["grok-4.6", "grok-4.6"])
+        XCTAssertEqual(effective.map(\.configID), ["effort", "fast"])
+        XCTAssertEqual(effective.map(\.valueRaw), ["high", "true"])
+    }
+
+    func testSemanticIdentityCanonicalizesLegacyComposerAlias() {
+        let legacy = ACPModelParameterIdentity(
+            providerID: .cursor,
+            baseModelRaw: "composer-2",
+            kind: .speed
+        )
+        let current = ACPModelParameterIdentity(
+            providerID: .cursor,
+            baseModelRaw: "composer-2.5",
+            kind: .speed
+        )
+
+        XCTAssertEqual(legacy, current)
+    }
+
+    func testCursorDiscoveryCannotReplaceReleaseCatalogSelectionsInUIFlows() {
+        XCTAssertFalse(AgentModeViewModel.test_shouldAdoptDiscoveredPreferredModel(for: .cursor))
+        XCTAssertFalse(ContextBuilderAgentViewModel.test_shouldAdoptDiscoveredPreferredModel(for: .cursor))
+        XCTAssertTrue(AgentModeViewModel.test_shouldAdoptDiscoveredPreferredModel(for: .openCode))
+        XCTAssertTrue(ContextBuilderAgentViewModel.test_shouldAdoptDiscoveredPreferredModel(for: .openCode))
+    }
+
     func testActiveCursorRunLocksParameterControlsAndRejectsDefensiveSelection() {
         AgentACPModelRegistry.shared.test_reset(providerID: .cursor)
         defer { AgentACPModelRegistry.shared.test_reset(providerID: .cursor) }
@@ -263,13 +332,13 @@ final class CursorModelParameterSelectionTests: XCTestCase {
         viewModel.applySessionToBindings(session)
 
         XCTAssertTrue(viewModel.makeComposerProps(tabID: tabID).areModelControlsDisabled)
-        viewModel.selectCursorModelParameter(configID: "Cursor.Thought-Level", valueRaw: "high")
+        viewModel.selectCursorModelParameter(configID: "effort", valueRaw: "high")
         XCTAssertTrue(session.acpModelParameterSelections.isEmpty)
 
         session.runState = .idle
         viewModel.updateBindingsFromSession(session)
         XCTAssertFalse(viewModel.makeComposerProps(tabID: tabID).areModelControlsDisabled)
-        viewModel.selectCursorModelParameter(configID: "Cursor.Thought-Level", valueRaw: "high")
+        viewModel.selectCursorModelParameter(configID: "effort", valueRaw: "high")
         XCTAssertEqual(session.acpModelParameterSelections.map(\.valueRaw), ["high"])
 
         viewModel.test_setMCPControlledTabIDs([tabID])

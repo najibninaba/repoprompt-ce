@@ -5,6 +5,37 @@ import XCTest
 
 @MainActor
 final class AgentManageMCPToolServiceResumeTests: XCTestCase {
+    func testResumeRejectsModelParameterChangesWhileRunIsActive() async throws {
+        let window = try await makeWindow()
+        defer { WindowStatesManager.shared.unregisterWindowState(window) }
+
+        let viewModel = window.agentModeViewModel
+        let sessionID = UUID()
+        let session = await viewModel.ensureSessionReady(tabID: UUID())
+        session.selectedAgent = .cursor
+        session.selectedModelRaw = "grok-4.6"
+        _ = viewModel.test_installPersistentSessionBinding(sessionID: sessionID, on: session)
+        session.runState = .running
+
+        let service = makeService(window: window, connectionID: UUID())
+        do {
+            _ = try await service.execute(args: [
+                "op": .string("resume_session"),
+                "session_id": .string(sessionID.uuidString),
+                "model_parameters": .array([
+                    .object([
+                        "config_id": .string("effort"),
+                        "value": .string("high")
+                    ])
+                ])
+            ])
+            XCTFail("Expected active resume configuration to be rejected")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("actively running"))
+        }
+        XCTAssertTrue(session.acpModelParameterSelections.isEmpty)
+    }
+
     func testResumeOfControlledSessionPreservesWaitOwnershipAcrossSteering() async throws {
         let window = try await makeWindow()
         defer { WindowStatesManager.shared.unregisterWindowState(window) }

@@ -270,7 +270,7 @@ final class ContextBuilderModelStartupSelectionTests: XCTestCase {
 
         let gate = DiscoveryGate()
         let client = GatedCursorDiscoveryClient(result: nil, gate: gate)
-        let service = CursorACPModelPollingService(client: client, intervalNanos: 60_000_000_000)
+        let service = CursorACPModelPollingService(client: client)
         addTeardownBlock { await service.shutdown() }
         let discoveryStartedEvents = await gate.discoveryStartedEvents()
         let joinEvents = await service.test_refreshNowInFlightJoinEvents()
@@ -287,6 +287,23 @@ final class ContextBuilderModelStartupSelectionTests: XCTestCase {
 
         XCTAssertTrue(isReady)
         XCTAssertEqual(liveSnapshot?.isLiveDiscovery, true)
+        XCTAssertEqual(discoveryCallCount, 1)
+    }
+
+    func testCursorSubscriptionPerformsOneInitialReconciliationWithoutPeriodicPolling() async {
+        let gate = DiscoveryGate()
+        let client = GatedCursorDiscoveryClient(result: nil, gate: gate)
+        let service = CursorACPModelPollingService(client: client)
+        addTeardownBlock { await service.shutdown() }
+        let discoveryStartedEvents = await gate.discoveryStartedEvents()
+        let stream = await service.subscribe(workspacePath: nil)
+        await awaitFirstEvent(discoveryStartedEvents, description: "Cursor initial reconciliation started")
+
+        await gate.release()
+        _ = await liveCursorSnapshot(from: stream)
+        try? await Task.sleep(for: .milliseconds(30))
+
+        let discoveryCallCount = await gate.callCount()
         XCTAssertEqual(discoveryCallCount, 1)
     }
 

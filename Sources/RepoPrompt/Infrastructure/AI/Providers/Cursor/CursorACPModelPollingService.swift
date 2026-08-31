@@ -64,12 +64,7 @@ struct CursorACPControllerModelDiscoveryClient: CursorACPModelDiscoveryClient {
         let controller = try controllerFactory(provider, request)
         do {
             _ = try await controller.bootstrap()
-            try? await controller.setSessionModel(preferredModel)
-            // Parameterized Cursor sessions intentionally retain their discovered
-            // metadata on the controller rather than publishing it to the global
-            // model registry. The release catalog owns picker choices; this snapshot
-            // is only the live runtime authority for applying a chosen model.
-            let snapshot = await controller.currentDiscoveredSessionModels()
+            let snapshot = try await controller.cursorAvailableModelCatalog()
             await controller.shutdown()
             return snapshot
         } catch {
@@ -79,8 +74,8 @@ struct CursorACPControllerModelDiscoveryClient: CursorACPModelDiscoveryClient {
     }
 }
 
-// SEARCH-HELPER: Cursor ACP model polling, dynamic discovery, subscribe, registry refresh
-/// Centralized polling service for Cursor ACP dynamic model options.
+// SEARCH-HELPER: Cursor ACP model discovery, reconciliation, subscribe, registry refresh
+/// Centralized one-shot discovery service for Cursor ACP model metadata.
 ///
 /// Cursor can expose model metadata through ACP session bootstrap responses. This mirrors the
 /// OpenCode model discovery path while preserving Cursor's static Auto fallback when no
@@ -97,9 +92,7 @@ actor CursorACPModelPollingService {
     }
 
     private let client: any CursorACPModelDiscoveryClient
-    private let intervalNanos: UInt64
-
-    private var pollingTask: Task<Void, Never>?
+    private var initialRefreshTask: Task<Void, Never>?
     private var inFlightRefresh: Task<Bool, Never>?
     private var continuations: [UUID: AsyncStream<Snapshot>.Continuation] = [:]
     #if DEBUG
@@ -109,12 +102,8 @@ actor CursorACPModelPollingService {
     private var preferredWorkspacePath: String?
     private var isShutdown = false
 
-    init(
-        client: any CursorACPModelDiscoveryClient,
-        intervalNanos: UInt64 = 300_000_000_000
-    ) {
+    init(client: any CursorACPModelDiscoveryClient) {
         self.client = client
-        self.intervalNanos = intervalNanos
     }
 
     func latestSnapshot() async -> Snapshot? {
@@ -175,7 +164,9 @@ actor CursorACPModelPollingService {
         }
 
         guard !isShutdown else { return stream }
-        startPollingIfNeeded()
+        if latest?.isLiveDiscovery != true {
+            startInitialRefreshIfNeeded()
+        }
         return stream
     }
 
@@ -194,8 +185,8 @@ actor CursorACPModelPollingService {
 
     func shutdown(finishSubscribers: Bool = true) async {
         isShutdown = true
-        pollingTask?.cancel()
-        pollingTask = nil
+        initialRefreshTask?.cancel()
+        initialRefreshTask = nil
         inFlightRefresh?.cancel()
         inFlightRefresh = nil
         #if DEBUG
@@ -214,31 +205,29 @@ actor CursorACPModelPollingService {
         }
     }
 
-    private func startPollingIfNeeded() {
+    private func startInitialRefreshIfNeeded() {
         guard !isShutdown else { return }
-        guard pollingTask == nil else { return }
-        pollingTask = Task { [weak self] in
+        guard initialRefreshTask == nil else { return }
+        initialRefreshTask = Task { [weak self] in
             guard let self else { return }
-            while !Task.isCancelled {
-                _ = await performRefresh()
-                do {
-                    try await Task.sleep(nanoseconds: intervalNanos)
-                } catch {
-                    break
-                }
-            }
+            _ = await performRefresh()
+            await finishInitialRefresh()
         }
     }
 
-    private func stopPollingIfIdle() {
+    private func finishInitialRefresh() {
+        initialRefreshTask = nil
+    }
+
+    private func stopInitialRefreshIfIdle() {
         guard continuations.isEmpty else { return }
-        pollingTask?.cancel()
-        pollingTask = nil
+        initialRefreshTask?.cancel()
+        initialRefreshTask = nil
     }
 
     private func removeSubscriber(_ id: UUID) {
         continuations.removeValue(forKey: id)
-        stopPollingIfIdle()
+        stopInitialRefreshIfIdle()
     }
 
     #if DEBUG

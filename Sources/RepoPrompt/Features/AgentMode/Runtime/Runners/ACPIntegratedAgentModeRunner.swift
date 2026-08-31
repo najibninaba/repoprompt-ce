@@ -1754,6 +1754,7 @@ final class ACPIntegratedAgentModeRunner {
         session: AgentTabSession
     ) -> Bool {
         guard let providerID = agentKind.acpProviderID,
+              providerID != .cursor,
               let snapshot = AgentACPModelRegistry.shared.resolvedSnapshot(for: providerID)
         else {
             return false

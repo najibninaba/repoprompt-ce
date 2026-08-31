@@ -874,6 +874,7 @@ final class AgentManageMCPToolServiceCleanupTests: XCTestCase {
             agentKind: AgentProviderKind.codexExec.rawValue,
             agentModel: "codex",
             lastRunState: runState.rawValue,
+            acpModelParameterSelections: [],
             parentSessionID: nil,
             isMCPOriginated: isMCPOriginated,
             worktreeBindingSummaries: [],

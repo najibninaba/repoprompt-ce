@@ -17,7 +17,7 @@ final class CursorLocalModelCatalogTests: XCTestCase {
 
         XCTAssertEqual(parameterSet.baseModelRaw, "grok-4.6")
         XCTAssertEqual(parameterSet.parameters.map(\.kind), [.thinking, .speed])
-        XCTAssertEqual(parameterSet.parameters.map(\.configID), ["Cursor.Thought-Level", "fast"])
+        XCTAssertEqual(parameterSet.parameters.map(\.configID), ["effort", "fast"])
 
         let effort = try XCTUnwrap(parameterSet.parameters.first { $0.kind == .thinking })
         XCTAssertEqual(effort.choices.map(\.rawValue), ["low", "medium", "high", "xhigh"])
@@ -33,7 +33,7 @@ final class CursorLocalModelCatalogTests: XCTestCase {
         let parameterSet = try XCTUnwrap(CursorAIModelCatalog.parameterSet(for: "composer-2.5"))
 
         XCTAssertEqual(parameterSet.parameters.map(\.kind), [.speed])
-        XCTAssertEqual(parameterSet.parameters.first?.currentValueRaw, "false")
+        XCTAssertEqual(parameterSet.parameters.first?.currentValueRaw, "true")
     }
 
     func testPersistedLegacyComposer2SelectionCanonicalizesWithoutDuplicatingPickerOption() {
@@ -68,7 +68,7 @@ final class CursorLocalModelCatalogTests: XCTestCase {
 
         let speed = try XCTUnwrap(parameterSet.parameters.first { $0.kind == .speed })
         XCTAssertEqual(speed.choices.map(\.rawValue), ["false", "true"])
-        XCTAssertEqual(speed.currentValueRaw, "false")
+        XCTAssertEqual(speed.currentValueRaw, "true")
     }
 
     func testReleaseCatalogPinsEffortAndSpeedCapabilitiesForParameterizedCursorModels() throws {
@@ -79,21 +79,22 @@ final class CursorLocalModelCatalogTests: XCTestCase {
         }
         let expectations = [
             Expectation(model: "claude-fable-5", effortValues: ["low", "medium", "high", "xhigh", "max"], hasSpeed: false),
-            Expectation(model: "claude-opus-4-6", effortValues: ["high", "max"], hasSpeed: false),
+            Expectation(model: "claude-opus-4-6", effortValues: ["low", "medium", "high", "max"], hasSpeed: false),
             Expectation(model: "claude-opus-4-7", effortValues: ["low", "medium", "high", "xhigh", "max"], hasSpeed: true),
             Expectation(model: "claude-opus-4-8", effortValues: ["low", "medium", "high", "xhigh", "max"], hasSpeed: true),
             Expectation(model: "claude-opus-5", effortValues: ["low", "medium", "high", "xhigh", "max"], hasSpeed: true),
             Expectation(model: "claude-sonnet-5", effortValues: ["low", "medium", "high", "xhigh", "max"], hasSpeed: false),
+            Expectation(model: "claude-sonnet-4-6", effortValues: ["low", "medium", "high", "max"], hasSpeed: false),
             Expectation(model: "gemini-3.6-flash", effortValues: ["minimal", "low", "medium", "high"], hasSpeed: false),
             Expectation(model: "gemini-3.7-flash", effortValues: ["low", "medium", "high"], hasSpeed: false),
             Expectation(model: "glm-5.2", effortValues: ["high", "max"], hasSpeed: false),
             Expectation(model: "gpt-5.1", effortValues: ["low", "medium", "high"], hasSpeed: false),
-            Expectation(model: "gpt-5.2", effortValues: ["low", "medium", "high", "xhigh"], hasSpeed: true),
-            Expectation(model: "gpt-5.3-codex", effortValues: ["low", "medium", "high", "xhigh"], hasSpeed: true),
-            Expectation(model: "gpt-5.4", effortValues: ["low", "medium", "high", "xhigh"], hasSpeed: true),
+            Expectation(model: "gpt-5.2", effortValues: ["low", "medium", "high", "extra-high"], hasSpeed: true),
+            Expectation(model: "gpt-5.3-codex", effortValues: ["low", "medium", "high", "extra-high"], hasSpeed: true),
+            Expectation(model: "gpt-5.4", effortValues: ["none", "low", "medium", "high", "extra-high"], hasSpeed: true),
             Expectation(model: "gpt-5.4-mini", effortValues: ["none", "low", "medium", "high", "xhigh"], hasSpeed: false),
             Expectation(model: "gpt-5.4-nano", effortValues: ["none", "low", "medium", "high", "xhigh"], hasSpeed: false),
-            Expectation(model: "gpt-5.5", effortValues: ["none", "low", "medium", "high", "xhigh"], hasSpeed: true),
+            Expectation(model: "gpt-5.5", effortValues: ["none", "low", "medium", "high", "extra-high"], hasSpeed: true),
             Expectation(model: "gpt-5.6-luna", effortValues: ["none", "low", "medium", "high", "xhigh", "max"], hasSpeed: true),
             Expectation(model: "gpt-5.6-sol", effortValues: ["none", "low", "medium", "high", "xhigh", "max"], hasSpeed: true),
             Expectation(model: "gpt-5.6-terra", effortValues: ["none", "low", "medium", "high", "xhigh", "max"], hasSpeed: true),
@@ -125,6 +126,57 @@ final class CursorLocalModelCatalogTests: XCTestCase {
                 )
             }
         }
+    }
+
+    func testBooleanOnlyThinkingModelsDoNotExposeEffortControls() {
+        for model in ["claude-haiku-4-5", "claude-opus-4-5", "claude-sonnet-4", "claude-sonnet-4-5"] {
+            XCTAssertNil(CursorAIModelCatalog.parameterSet(for: model), model)
+        }
+    }
+
+    func testLiveCatalogReconciliationAcceptsExactMetadataAndReportsEffortDrift() throws {
+        let exactSets = CursorAIModelCatalog.options.compactMap {
+            CursorAIModelCatalog.parameterSet(for: $0.rawValue)
+        }
+        let liveOptions = CursorAIModelCatalog.options.map { option in
+            option.rawValue == AgentModel.cursorAuto.rawValue
+                ? AgentModelOption(rawValue: "default", displayName: "Auto", description: nil, isDefault: true)
+                : option
+        }
+        let exactSnapshot = ACPDiscoveredSessionModels(
+            options: liveOptions,
+            currentModelRaw: "grok-4.6",
+            modelParameterSets: exactSets
+        )
+        XCTAssertTrue(CursorAIModelCatalog.reconciliationIssues(comparedTo: exactSnapshot).isEmpty)
+
+        let gpt54 = try XCTUnwrap(CursorAIModelCatalog.parameterSet(for: "gpt-5.4"))
+        let effort = try XCTUnwrap(gpt54.definition(kind: .thinking))
+        let driftedEffort = ACPModelParameterDefinition(
+            kind: .thinking,
+            configID: effort.configID,
+            displayName: effort.displayName,
+            choices: effort.choices.filter { $0.rawValue != "extra-high" },
+            currentValueRaw: effort.currentValueRaw
+        )
+        let driftedSets = exactSets.map { set in
+            set.baseModelRaw == gpt54.baseModelRaw
+                ? ACPModelParameterSet(
+                    baseModelRaw: set.baseModelRaw,
+                    parameters: set.parameters.map { $0.kind == .thinking ? driftedEffort : $0 }
+                )
+                : set
+        }
+        let driftedSnapshot = ACPDiscoveredSessionModels(
+            options: liveOptions,
+            currentModelRaw: "grok-4.6",
+            modelParameterSets: driftedSets
+        )
+
+        XCTAssertEqual(
+            CursorAIModelCatalog.reconciliationIssues(comparedTo: driftedSnapshot),
+            ["gpt-5.4 Effort choices changed (local: none, low, medium, high, extra-high; live: none, low, medium, high)"]
+        )
     }
 
     func testAgentModelCatalogUsesReleaseGatedCursorOptionsAndRejectsDiscoveredUnknownModels() {

@@ -250,7 +250,8 @@ struct AgentManageMCPToolService {
                 stateRaw: meta.lastRunState,
                 isLive: false,
                 parentSessionID: meta.parentSessionID,
-                isMCPOriginated: meta.isMCPOriginated
+                isMCPOriginated: meta.isMCPOriginated,
+                modelParameterSelections: meta.acpModelParameterSelections
             )
         }
 
@@ -590,6 +591,14 @@ struct AgentManageMCPToolService {
         let hadMatchingMCPControl = agentModeVM.session(for: target.tabID, createIfNeeded: false)?.mcpControlContext?.sessionID == sessionID
         do {
             let hydratedSession = await agentModeVM.ensureSessionReady(tabID: target.tabID)
+            let hasExplicitConfigurationChange = normalizedString(args["model_id"]) != nil
+                || normalizedString(args["reasoning_effort"]) != nil
+                || args["model_parameters"] != nil
+            if hydratedSession.runState.isActive, hasExplicitConfigurationChange {
+                throw MCPError.invalidParams(
+                    "Cannot change model settings while this session is actively running. Retry resume_session after the current run completes."
+                )
+            }
             let parameterAgentRaw = resolved.agent ?? hydratedSession.selectedAgent.rawValue
             let parameterModelRaw = resolved.model ?? hydratedSession.selectedModelRaw
             let modelParameterSelections = try AgentMCPModelParameterSupport.resolve(

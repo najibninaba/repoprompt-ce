@@ -50,6 +50,64 @@ enum CursorAIModelCatalog {
         return ACPModelParameterSet(baseModelRaw: match.rawValue, parameters: match.parameters)
     }
 
+    static func reconciliationIssues(comparedTo liveCatalog: ACPDiscoveredSessionModels) -> [String] {
+        var issues: [String] = []
+
+        for localEntry in entries {
+            guard liveCatalog.options.contains(where: { liveOption in
+                let matched = entry(matching: liveOption.rawValue) ?? entry(matching: liveOption.displayName)
+                return matched?.rawValue == localEntry.rawValue
+            }) else {
+                issues.append("\(localEntry.rawValue) is missing from Cursor's live catalog")
+                continue
+            }
+
+            let liveSet = liveCatalog.modelParameterSets.first { set in
+                entry(matching: set.baseModelRaw)?.rawValue == localEntry.rawValue
+            }
+            for localDefinition in localEntry.parameters {
+                guard let liveDefinition = liveSet?.definition(kind: localDefinition.kind) else {
+                    issues.append("\(localEntry.rawValue) \(localDefinition.displayName) is missing from Cursor's live catalog")
+                    continue
+                }
+                if localDefinition.configID != liveDefinition.configID {
+                    issues.append(
+                        "\(localEntry.rawValue) \(localDefinition.displayName) selector changed "
+                            + "(local: \(localDefinition.configID); live: \(liveDefinition.configID))"
+                    )
+                }
+                let localChoices = localDefinition.choices.map(\.rawValue)
+                let liveChoices = liveDefinition.choices.map(\.rawValue)
+                if localChoices != liveChoices {
+                    issues.append(
+                        "\(localEntry.rawValue) \(localDefinition.displayName) choices changed "
+                            + "(local: \(localChoices.joined(separator: ", ")); "
+                            + "live: \(liveChoices.joined(separator: ", ")))"
+                    )
+                }
+                if localDefinition.currentValueRaw != liveDefinition.currentValueRaw {
+                    issues.append(
+                        "\(localEntry.rawValue) \(localDefinition.displayName) default changed "
+                            + "(local: \(localDefinition.currentValueRaw); live: \(liveDefinition.currentValueRaw))"
+                    )
+                }
+            }
+
+            let localKinds = Set(localEntry.parameters.map(\.kind))
+            for liveDefinition in liveSet?.parameters ?? [] where !localKinds.contains(liveDefinition.kind) {
+                issues.append("\(localEntry.rawValue) now exposes \(liveDefinition.displayName)")
+            }
+        }
+
+        for liveOption in liveCatalog.options {
+            guard entry(matching: liveOption.rawValue) == nil,
+                  entry(matching: liveOption.displayName) == nil
+            else { continue }
+            issues.append("\(liveOption.rawValue) is new in Cursor's live catalog")
+        }
+        return issues
+    }
+
     private static let entries: [Entry] = [
         Entry(AgentModel.cursorAuto.rawValue, AgentModel.cursorAuto.displayName),
         Entry(
@@ -67,14 +125,14 @@ enum CursorAIModelCatalog {
             aliases: ["cursor-grok-4.5"],
             parameters: [
                 effortDefinition(values: ["low", "medium", "high"], defaultValue: "high"),
-                speedDefinition(defaultValue: "false")
+                speedDefinition(defaultValue: "true")
             ]
         ),
         Entry(
             "composer-2.5",
             "Composer 2.5",
             aliases: ["composer-2"],
-            parameters: [speedDefinition(defaultValue: "false")]
+            parameters: [speedDefinition(defaultValue: "true")]
         ),
         Entry(
             "claude-fable-5",
@@ -89,7 +147,7 @@ enum CursorAIModelCatalog {
         Entry(
             "claude-opus-4-6",
             "Claude Opus 4.6",
-            parameters: effortParameters(values: ["high", "max"], defaultValue: "high")
+            parameters: effortParameters(values: ["low", "medium", "high", "max"], defaultValue: "medium")
         ),
         Entry(
             "claude-opus-4-7",
@@ -117,7 +175,11 @@ enum CursorAIModelCatalog {
         ),
         Entry("claude-sonnet-4", "Claude Sonnet 4"),
         Entry("claude-sonnet-4-5", "Claude Sonnet 4.5"),
-        Entry("claude-sonnet-4-6", "Claude Sonnet 4.6"),
+        Entry(
+            "claude-sonnet-4-6",
+            "Claude Sonnet 4.6",
+            parameters: effortParameters(values: ["low", "medium", "high", "max"], defaultValue: "medium")
+        ),
         Entry(
             "claude-sonnet-5",
             "Claude Sonnet 5",
@@ -146,36 +208,39 @@ enum CursorAIModelCatalog {
         Entry(
             "glm-5.2",
             "GLM 5.2",
-            parameters: effortParameters(values: ["high", "max"], defaultValue: "high")
+            parameters: effortParameters(values: ["high", "max"], defaultValue: "high", configID: "reasoning")
         ),
         Entry("gpt-5-mini", "GPT-5 Mini"),
         Entry(
             "gpt-5.1",
             "GPT-5.1",
-            parameters: effortParameters(values: ["low", "medium", "high"], defaultValue: "medium")
+            parameters: effortParameters(values: ["low", "medium", "high"], defaultValue: "medium", configID: "reasoning")
         ),
         Entry(
             "gpt-5.2",
             "GPT-5.2",
             parameters: effortAndSpeedParameters(
-                values: ["low", "medium", "high", "xhigh"],
-                defaultEffort: "medium"
+                values: ["low", "medium", "high", "extra-high"],
+                defaultEffort: "medium",
+                configID: "reasoning"
             )
         ),
         Entry(
             "gpt-5.3-codex",
             "Codex 5.3",
             parameters: effortAndSpeedParameters(
-                values: ["low", "medium", "high", "xhigh"],
-                defaultEffort: "medium"
+                values: ["low", "medium", "high", "extra-high"],
+                defaultEffort: "medium",
+                configID: "reasoning"
             )
         ),
         Entry(
             "gpt-5.4",
             "GPT-5.4",
             parameters: effortAndSpeedParameters(
-                values: ["low", "medium", "high", "xhigh"],
-                defaultEffort: "medium"
+                values: ["none", "low", "medium", "high", "extra-high"],
+                defaultEffort: "medium",
+                configID: "reasoning"
             )
         ),
         Entry(
@@ -183,7 +248,8 @@ enum CursorAIModelCatalog {
             "GPT-5.4 Mini",
             parameters: effortParameters(
                 values: ["none", "low", "medium", "high", "xhigh"],
-                defaultValue: "medium"
+                defaultValue: "medium",
+                configID: "reasoning"
             )
         ),
         Entry(
@@ -191,15 +257,17 @@ enum CursorAIModelCatalog {
             "GPT-5.4 Nano",
             parameters: effortParameters(
                 values: ["none", "low", "medium", "high", "xhigh"],
-                defaultValue: "medium"
+                defaultValue: "medium",
+                configID: "reasoning"
             )
         ),
         Entry(
             "gpt-5.5",
             "GPT-5.5",
             parameters: effortAndSpeedParameters(
-                values: ["none", "low", "medium", "high", "xhigh"],
-                defaultEffort: "medium"
+                values: ["none", "low", "medium", "high", "extra-high"],
+                defaultEffort: "medium",
+                configID: "reasoning"
             )
         ),
         Entry(
@@ -207,7 +275,8 @@ enum CursorAIModelCatalog {
             "GPT-5.6 Luna",
             parameters: effortAndSpeedParameters(
                 values: ["none", "low", "medium", "high", "xhigh", "max"],
-                defaultEffort: "medium"
+                defaultEffort: "medium",
+                configID: "reasoning"
             )
         ),
         Entry(
@@ -215,7 +284,8 @@ enum CursorAIModelCatalog {
             "GPT-5.6 Sol",
             parameters: effortAndSpeedParameters(
                 values: ["none", "low", "medium", "high", "xhigh", "max"],
-                defaultEffort: "medium"
+                defaultEffort: "medium",
+                configID: "reasoning"
             )
         ),
         Entry(
@@ -223,14 +293,15 @@ enum CursorAIModelCatalog {
             "GPT-5.6 Terra",
             parameters: effortAndSpeedParameters(
                 values: ["none", "low", "medium", "high", "xhigh", "max"],
-                defaultEffort: "medium"
+                defaultEffort: "medium",
+                configID: "reasoning"
             )
         ),
         Entry("kimi-k2.7-code", "Kimi K2.7 Code"),
         Entry(
             "kimi-k3",
             "Kimi K3",
-            parameters: effortParameters(values: ["low", "high", "max"], defaultValue: "max")
+            parameters: effortParameters(values: ["low", "high", "max"], defaultValue: "max", configID: "reasoning")
         )
     ]
 
@@ -246,16 +317,17 @@ enum CursorAIModelCatalog {
 
     private static func effortDefinition(
         values: [String],
-        defaultValue: String
+        defaultValue: String,
+        configID: String = "effort"
     ) -> ACPModelParameterDefinition {
         ACPModelParameterDefinition(
             kind: .thinking,
-            configID: "Cursor.Thought-Level",
+            configID: configID,
             displayName: "Effort",
             choices: values.map { value in
                 ACPModelParameterChoice(
                     rawValue: value,
-                    displayName: value == "xhigh" ? "Extra High" : value.capitalized
+                    displayName: ["xhigh", "extra-high"].contains(value) ? "Extra High" : value.capitalized
                 )
             },
             currentValueRaw: defaultValue
@@ -264,18 +336,20 @@ enum CursorAIModelCatalog {
 
     private static func effortParameters(
         values: [String],
-        defaultValue: String
+        defaultValue: String,
+        configID: String = "effort"
     ) -> [ACPModelParameterDefinition] {
-        [effortDefinition(values: values, defaultValue: defaultValue)]
+        [effortDefinition(values: values, defaultValue: defaultValue, configID: configID)]
     }
 
     private static func effortAndSpeedParameters(
         values: [String],
         defaultEffort: String,
+        configID: String = "effort",
         defaultFast: String = "false"
     ) -> [ACPModelParameterDefinition] {
         [
-            effortDefinition(values: values, defaultValue: defaultEffort),
+            effortDefinition(values: values, defaultValue: defaultEffort, configID: configID),
             speedDefinition(defaultValue: defaultFast)
         ]
     }

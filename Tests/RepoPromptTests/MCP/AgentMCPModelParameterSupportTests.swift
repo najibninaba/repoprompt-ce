@@ -8,7 +8,7 @@ final class AgentMCPModelParameterSupportTests: XCTestCase {
         let definitions = AgentMCPModelParameterSupport.definitions(modelRaw: "grok-4.6")
 
         XCTAssertEqual(definitions.count, 2)
-        XCTAssertEqual(definitions[0].configID, "Cursor.Thought-Level")
+        XCTAssertEqual(definitions[0].configID, "effort")
         XCTAssertEqual(definitions[0].choices.map(\.rawValue), ["low", "medium", "high", "xhigh"])
         XCTAssertEqual(definitions[1].configID, "fast")
         XCTAssertEqual(definitions[1].choices.map(\.rawValue), ["false", "true"])
@@ -30,7 +30,7 @@ final class AgentMCPModelParameterSupportTests: XCTestCase {
 
     func testResolveRejectsUnknownValueBeforeProducingSelections() throws {
         let requested: Value = .array([
-            .object(["config_id": .string("Cursor.Thought-Level"), "value": .string("maximum")])
+            .object(["config_id": .string("effort"), "value": .string("maximum")])
         ])
 
         XCTAssertThrowsError(try AgentMCPModelParameterSupport.resolve(
@@ -44,7 +44,7 @@ final class AgentMCPModelParameterSupportTests: XCTestCase {
 
     func testResolvePreservesExactProviderWireValueAndCanonicalBase() throws {
         let requested: Value = .array([
-            .object(["config_id": .string("Cursor.Thought-Level"), "value": .string("HIGH")]),
+            .object(["config_id": .string("effort"), "value": .string("HIGH")]),
             .object(["config_id": .string("fast"), "value": .string("true")])
         ])
 
@@ -54,7 +54,7 @@ final class AgentMCPModelParameterSupportTests: XCTestCase {
             modelRaw: "Cursor Grok 4.6"
         )
 
-        XCTAssertEqual(selections.map(\.configID), ["Cursor.Thought-Level", "fast"])
+        XCTAssertEqual(selections.map(\.configID), ["effort", "fast"])
         XCTAssertEqual(selections.map(\.valueRaw), ["high", "true"])
         XCTAssertEqual(selections.map(\.baseModelRaw), ["grok-4.6", "grok-4.6"])
     }
@@ -76,7 +76,7 @@ final class AgentMCPModelParameterSupportTests: XCTestCase {
     func testResolveRejectsWhitespaceBearingProviderConfigID() throws {
         XCTAssertThrowsError(try AgentMCPModelParameterSupport.resolve(
             value: .array([
-                .object(["config_id": .string(" Cursor.Thought-Level "), "value": .string("high")])
+                .object(["config_id": .string(" effort "), "value": .string("high")])
             ]),
             agent: .cursor,
             modelRaw: "grok-4.6"
@@ -85,8 +85,8 @@ final class AgentMCPModelParameterSupportTests: XCTestCase {
 
     func testResolveRejectsDuplicateConfigIDs() throws {
         let requested: Value = .array([
-            .object(["config_id": .string("Cursor.Thought-Level"), "value": .string("low")]),
-            .object(["config_id": .string("Cursor.Thought-Level"), "value": .string("high")])
+            .object(["config_id": .string("effort"), "value": .string("low")]),
+            .object(["config_id": .string("effort"), "value": .string("high")])
         ])
 
         XCTAssertThrowsError(try AgentMCPModelParameterSupport.resolve(
@@ -98,7 +98,7 @@ final class AgentMCPModelParameterSupportTests: XCTestCase {
 
     func testNonCursorProviderRejectsModelParameters() throws {
         let requested: Value = .array([
-            .object(["config_id": .string("Cursor.Thought-Level"), "value": .string("high")])
+            .object(["config_id": .string("effort"), "value": .string("high")])
         ])
 
         XCTAssertThrowsError(try AgentMCPModelParameterSupport.resolve(
@@ -152,9 +152,9 @@ final class AgentMCPModelParameterSupportTests: XCTestCase {
         let selections = [
             ACPModelParameterSelection(
                 providerID: .cursor,
-                baseModelRaw: "grok",
+                baseModelRaw: "grok-4.6",
                 kind: .thinking,
-                configID: "thought_level",
+                configID: "Cursor.Thought-Level",
                 valueRaw: "high"
             ),
             ACPModelParameterSelection(
@@ -170,9 +170,24 @@ final class AgentMCPModelParameterSupportTests: XCTestCase {
             AgentMCPModelParameterSupport.effectiveSelections(
                 selections,
                 agentRaw: AgentProviderKind.cursor.rawValue,
-                modelRaw: "Grok [Default]"
+                modelRaw: "Grok 4.6"
             ),
-            [selections[0]]
+            [
+                ACPModelParameterSelection(
+                    providerID: .cursor,
+                    baseModelRaw: "grok-4.6",
+                    kind: .thinking,
+                    configID: "effort",
+                    valueRaw: "high"
+                ),
+                ACPModelParameterSelection(
+                    providerID: .cursor,
+                    baseModelRaw: "grok-4.6",
+                    kind: .speed,
+                    configID: "fast",
+                    valueRaw: "true"
+                )
+            ]
         )
     }
 }

@@ -23,6 +23,7 @@ struct AgentSessionMeta {
     let agentKind: String?
     let agentModel: String?
     let lastRunState: String?
+    let acpModelParameterSelections: [ACPModelParameterSelection]
     let parentSessionID: UUID?
     let isMCPOriginated: Bool
     let worktreeBindingSummaries: [AgentSessionWorktreeBindingSummary]
@@ -1187,6 +1188,7 @@ actor AgentSessionDataService {
                         agentKind: session.agentKind,
                         agentModel: session.agentModel,
                         lastRunState: session.lastRunState,
+                        acpModelParameterSelections: session.acpModelParameterSelections,
                         parentSessionID: session.parentSessionID,
                         isMCPOriginated: session.isMCPOriginated,
                         worktreeBindingSummaries: session.worktreeBindings.worktreeBindingSummaries,
@@ -1241,6 +1243,7 @@ actor AgentSessionDataService {
                             agentKind: session.agentKind,
                             agentModel: session.agentModel,
                             lastRunState: session.lastRunState,
+                            acpModelParameterSelections: session.acpModelParameterSelections,
                             parentSessionID: session.parentSessionID,
                             isMCPOriginated: session.isMCPOriginated,
                             worktreeBindingSummaries: session.worktreeBindings.worktreeBindingSummaries,

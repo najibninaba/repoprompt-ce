@@ -1539,9 +1539,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
     }
 
     private func syncSelectedACPModelFromRegistryIfNeeded(for agent: AgentProviderKind) {
-        // Grok's "default" selection must stick: a discovered session's current model is
-        // never auto-adopted as an explicit selection (default sends no model mutation).
-        guard agent != .grokBuild else { return }
+        guard Self.shouldAdoptDiscoveredPreferredModel(for: agent) else { return }
         guard selectedAgent == agent,
               let providerID = agent.acpProviderID,
               let snapshot = AgentACPModelRegistry.shared.resolvedSnapshot(for: providerID),
@@ -1568,6 +1566,23 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         isRestoringState = false
         persistLastUsedModelIfNeeded(agent: agent, modelRaw: preferredModelRaw)
     }
+
+    private nonisolated static func shouldAdoptDiscoveredPreferredModel(
+        for agent: AgentProviderKind
+    ) -> Bool {
+        // Grok's default sends no model mutation. Cursor's release catalog is the
+        // selection authority, while discovery only reconciles runtime capabilities.
+        agent != .grokBuild && agent != .cursor
+    }
+
+    #if DEBUG
+        @_spi(TestSupport)
+        public nonisolated static func test_shouldAdoptDiscoveredPreferredModel(
+            for agent: AgentProviderKind
+        ) -> Bool {
+            shouldAdoptDiscoveredPreferredModel(for: agent)
+        }
+    #endif
 
     private nonisolated static func defaultHeadlessProviderFactory(
         agent: AgentProviderKind,

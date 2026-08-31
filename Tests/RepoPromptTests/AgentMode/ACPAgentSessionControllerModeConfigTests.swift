@@ -115,6 +115,33 @@ final class ACPAgentSessionControllerModeConfigTests: XCTestCase {
         XCTAssertEqual(mutation.params["value"] as? String, "true")
     }
 
+    func testCursorSemanticEffortSelectionResolvesLegacyPersistedIDToLiveEffortSelector() async throws {
+        let fixture = try makeFixture(
+            shape: "modern",
+            extraEnvironment: [
+                "ACP_INCLUDE_MODEL": "1",
+                "ACP_INCLUDE_PARAMETERS": "1",
+                "ACP_OBSERVED_EFFORT_SELECTOR": "1"
+            ],
+            providerID: .cursor
+        )
+        _ = try await fixture.controller.bootstrap()
+
+        let report = try await fixture.controller.applySessionModelParameterSelections([.init(
+            providerID: .cursor,
+            baseModelRaw: "model-a",
+            kind: .thinking,
+            configID: "Cursor.Thought-Level",
+            valueRaw: "High"
+        )])
+
+        XCTAssertEqual(report.applied.map(\.valueRaw), ["High"])
+        XCTAssertTrue(report.skipped.isEmpty)
+        let mutation = try XCTUnwrap(recordedMutationRequests(at: fixture.recordURL).first)
+        XCTAssertEqual(mutation.params["configId"] as? String, "effort")
+        XCTAssertEqual(mutation.params["value"] as? String, "High")
+    }
+
     func testCursorAlreadyCurrentParameterIsSuccessfulNoOpNotUnsupportedSkip() async throws {
         let fixture = try makeFixture(
             shape: "modern",
@@ -1605,6 +1632,7 @@ final class ACPAgentSessionControllerModeConfigTests: XCTestCase {
         def parameter_options():
             if os.environ.get("ACP_INCLUDE_PARAMETERS") != "1":
                 return []
+            effort_config_id = "effort" if os.environ.get("ACP_OBSERVED_EFFORT_SELECTOR") == "1" else "Cursor.Thought-Level"
             fast_option = {
                 "id": "fast" if os.environ.get("ACP_OBSERVED_FAST_SELECTOR") == "1" else "Cursor.Fast-Mode",
                 "name": "Fast Mode" if os.environ.get("ACP_OBSERVED_FAST_SELECTOR") == "1" else "Speed",
@@ -1618,7 +1646,7 @@ final class ACPAgentSessionControllerModeConfigTests: XCTestCase {
             }
             return [
                 {
-                    "id": "Cursor.Thought-Level",
+                    "id": effort_config_id,
                     "name": "Effort",
                     "category": "thought_level",
                     "type": "select",
@@ -1772,7 +1800,7 @@ final class ACPAgentSessionControllerModeConfigTests: XCTestCase {
                     if os.environ.get("ACP_MODEL_RELEASE_FIFO"):
                         threading.Thread(target=delayed_model_response, args=(request.get("id"),), daemon=True).start()
                         continue
-                elif config_id == "Cursor.Thought-Level":
+                elif config_id in ("Cursor.Thought-Level", "effort"):
                     current_thought = params.get("value")
                 elif config_id in ("Cursor.Fast-Mode", "fast"):
                     current_fast = params.get("value")

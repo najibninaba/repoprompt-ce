@@ -49,6 +49,11 @@ struct ACPModelParameterSet: Codable, Hashable {
     func definition(configID: String) -> ACPModelParameterDefinition? {
         parameters.first { $0.configID == configID }
     }
+
+    func definition(kind: ACPModelParameterKind) -> ACPModelParameterDefinition? {
+        let matches = parameters.filter { $0.kind == kind }
+        return matches.count == 1 ? matches[0] : nil
+    }
 }
 
 struct ACPModelParameterSelection: Codable, Hashable {
@@ -62,8 +67,7 @@ struct ACPModelParameterSelection: Codable, Hashable {
         ACPModelParameterIdentity(
             providerID: providerID,
             baseModelRaw: baseModelRaw,
-            kind: kind,
-            configID: configID
+            kind: kind
         )
     }
 
@@ -103,23 +107,21 @@ struct ACPModelParameterIdentity: Hashable {
     let providerID: ACPProviderID
     let canonicalBaseModelRaw: String
     let kind: ACPModelParameterKind
-    let configID: String
 
     init(
         providerID: ACPProviderID,
         baseModelRaw: String,
-        kind: ACPModelParameterKind,
-        configID: String
+        kind: ACPModelParameterKind
     ) {
         self.providerID = providerID
         canonicalBaseModelRaw = Self.canonicalBaseModelRaw(baseModelRaw, providerID: providerID)
         self.kind = kind
-        self.configID = configID
     }
 
-    fileprivate static func canonicalBaseModelRaw(_ raw: String, providerID: ACPProviderID) -> String {
+    static func canonicalBaseModelRaw(_ raw: String, providerID: ACPProviderID) -> String {
         if providerID == .cursor {
-            return ACPAIModelCatalog.normalizedCursorModelAlias(raw)
+            return CursorAIModelCatalog.option(matching: raw)?.rawValue
+                ?? ACPAIModelCatalog.normalizedCursorModelAlias(raw)
         }
         return raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
@@ -156,8 +158,7 @@ enum ACPModelParameterResolver {
             let definitionIdentity = ACPModelParameterIdentity(
                 providerID: providerID,
                 baseModelRaw: parameterSet.baseModelRaw,
-                kind: definition.kind,
-                configID: definition.configID
+                kind: definition.kind
             )
             let saved = persistedSelections.last { selection in
                 selection.identity == definitionIdentity
@@ -175,5 +176,25 @@ enum ACPModelParameterResolver {
 
     static func cursorParameterSet(selectedModelRaw: String) -> ACPModelParameterSet? {
         CursorAIModelCatalog.parameterSet(for: selectedModelRaw)
+    }
+
+    static func effectiveSelections(
+        providerID: ACPProviderID,
+        selectedModelRaw: String,
+        persistedSelections: [ACPModelParameterSelection]
+    ) -> [ACPModelParameterSelection] {
+        resolve(
+            providerID: providerID,
+            selectedModelRaw: selectedModelRaw,
+            persistedSelections: persistedSelections
+        ).map { resolved in
+            ACPModelParameterSelection(
+                providerID: providerID,
+                baseModelRaw: resolved.baseModelRaw,
+                kind: resolved.definition.kind,
+                configID: resolved.definition.configID,
+                valueRaw: resolved.selectedChoice.rawValue
+            )
+        }
     }
 }

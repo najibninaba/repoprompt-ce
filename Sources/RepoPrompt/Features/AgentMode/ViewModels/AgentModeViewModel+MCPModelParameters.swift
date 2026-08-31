@@ -127,10 +127,16 @@ extension AgentModeViewModel {
         guard selectedAgent == .cursor else {
             throw MCPError.invalidParams("Cursor model parameters cannot be applied to \(selectedAgent.displayName).")
         }
-        let selectedModelIdentity = ACPAIModelCatalog.normalizedCursorModelAlias(selectedModelRaw)
+        let selectedModelIdentity = ACPModelParameterIdentity.canonicalBaseModelRaw(
+            selectedModelRaw,
+            providerID: .cursor
+        )
         guard selections.allSatisfy({
             $0.providerID == .cursor
-                && ACPAIModelCatalog.normalizedCursorModelAlias($0.baseModelRaw) == selectedModelIdentity
+                && ACPModelParameterIdentity.canonicalBaseModelRaw(
+                    $0.baseModelRaw,
+                    providerID: .cursor
+                ) == selectedModelIdentity
         }) else {
             throw MCPError.invalidParams("Cursor model parameters do not match the configured base model.")
         }

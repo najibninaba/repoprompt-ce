@@ -24,7 +24,7 @@ final class MCPWorkspaceScopedCursorModelParameterTests: XCTestCase {
         let listed = try await service.execute(args: ["op": .string("list_agents")])
         XCTAssertEqual(
             listedParameterConfigIDs(listed, modelRaw: "grok-4.6"),
-            ["Cursor.Thought-Level", "fast"]
+            ["effort", "fast"]
         )
 
         let modelID = cursorModelID
@@ -32,11 +32,11 @@ final class MCPWorkspaceScopedCursorModelParameterTests: XCTestCase {
             "op": .string("create_session"),
             "model_id": .string(modelID),
             "model_parameters": request([
-                ("Cursor.Thought-Level", "high"),
+                ("effort", "high"),
                 ("fast", "true")
             ])
         ])
-        XCTAssertEqual(effectiveParameterConfigIDs(created), ["Cursor.Thought-Level", "fast"])
+        XCTAssertEqual(effectiveParameterConfigIDs(created), ["effort", "fast"])
         let sessionID = try XCTUnwrap(created.objectValue?["session_id"]?.stringValue)
 
         let resumed = try await service.execute(args: [
@@ -44,11 +44,11 @@ final class MCPWorkspaceScopedCursorModelParameterTests: XCTestCase {
             "session_id": .string(sessionID),
             "model_id": .string(modelID),
             "model_parameters": request([
-                ("Cursor.Thought-Level", "low"),
+                ("effort", "low"),
                 ("fast", "false")
             ])
         ])
-        XCTAssertEqual(effectiveParameterConfigIDs(resumed), ["Cursor.Thought-Level", "fast"])
+        XCTAssertEqual(effectiveParameterConfigIDs(resumed), ["effort", "fast"])
     }
 
     func testAgentRunStartRejectsUnknownReleaseCatalogParameter() async throws {
@@ -69,6 +69,36 @@ final class MCPWorkspaceScopedCursorModelParameterTests: XCTestCase {
         } catch {
             XCTAssertTrue(String(describing: error).contains("workspace_effort"))
         }
+    }
+
+    func testAgentRunSuccessfulStartStagesLegacyComposerAliasWithCanonicalSpeedSelection() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        let window = try await makeWindow(name: "Cursor MCP Successful Run", root: fixture.root)
+        defer { WindowStatesManager.shared.unregisterWindowState(window) }
+        var stagedSelections: [ACPModelParameterSelection] = []
+        let service = makeRunService(
+            window: window,
+            successfulStart: true,
+            observeSuccessfulStart: { selections in
+                stagedSelections = selections
+            }
+        )
+
+        _ = try await service.execute(args: [
+            "op": .string("start"),
+            "message": .string("Use the configured Cursor speed."),
+            "model_id": .string(AgentModelSelectionID(
+                agentRaw: AgentProviderKind.cursor.rawValue,
+                modelRaw: "composer-2"
+            ).rawValue),
+            "model_parameters": request([("fast", "true")]),
+            "detach": .bool(true)
+        ])
+
+        XCTAssertEqual(stagedSelections.map(\.baseModelRaw), ["composer-2.5"])
+        XCTAssertEqual(stagedSelections.map(\.configID), ["fast"])
+        XCTAssertEqual(stagedSelections.map(\.valueRaw), ["true"])
     }
 
     func testAgentRunFailedStartRestoresExistingSessionCursorParameters() async throws {
@@ -107,7 +137,7 @@ final class MCPWorkspaceScopedCursorModelParameterTests: XCTestCase {
                 "op": .string("start"),
                 "message": .string("Fail after staging Cursor parameters."),
                 "model_id": .string(cursorModelID),
-                "model_parameters": request([("Cursor.Thought-Level", "high")])
+                "model_parameters": request([("effort", "high")])
             ])
             XCTFail("Expected the injected provider start failure")
         } catch {
@@ -158,7 +188,7 @@ final class MCPWorkspaceScopedCursorModelParameterTests: XCTestCase {
                 "op": .string("start"),
                 "message": .string("Preserve a newer parameter selection after failure."),
                 "model_id": .string(cursorModelID),
-                "model_parameters": request([("Cursor.Thought-Level", "high")])
+                "model_parameters": request([("effort", "high")])
             ])
             XCTFail("Expected the injected provider start failure")
         } catch {
@@ -225,7 +255,9 @@ final class MCPWorkspaceScopedCursorModelParameterTests: XCTestCase {
     private func makeRunService(
         window: WindowState,
         targetTabID: UUID? = nil,
-        beforeStartFailure: ((AgentModeViewModel, UUID) throws -> Void)? = nil
+        beforeStartFailure: ((AgentModeViewModel, UUID) throws -> Void)? = nil,
+        successfulStart: Bool = false,
+        observeSuccessfulStart: (([ACPModelParameterSelection]) -> Void)? = nil
     ) -> AgentRunMCPToolService {
         var service = AgentRunMCPToolService(
             toolName: MCPWindowToolName.agentRun,
@@ -241,8 +273,41 @@ final class MCPWorkspaceScopedCursorModelParameterTests: XCTestCase {
             resolveSpawnParentSourceTabID: { _ in nil },
             resolveSpawnParentSessionID: { _, _ in nil },
             withHeartbeat: { _, _, _, _, operation in try await operation() },
-            startRun: { target, _, _, agentModeVM, _, _, _, _, _, _, _ in
+            startRun: { target, _, _, agentModeVM, agentRaw, modelRaw, reasoningEffortRaw, _, _, _, _ in
                 try beforeStartFailure?(agentModeVM, target.tabID)
+                if successfulStart {
+                    let session = agentModeVM.session(for: target.tabID)
+                    observeSuccessfulStart?(session.acpModelParameterSelections)
+                    let snapshot = AgentRunMCPSnapshot(
+                        sessionID: target.sessionID ?? UUID(),
+                        tabID: target.tabID,
+                        sessionName: "Cursor MCP Successful Run",
+                        agentRaw: agentRaw,
+                        agentDisplayName: agentRaw.flatMap { AgentProviderKind(rawValue: $0)?.displayName },
+                        modelRaw: modelRaw,
+                        reasoningEffortRaw: reasoningEffortRaw,
+                        modelParameterSelections: session.acpModelParameterSelections.map {
+                            .init(
+                                providerID: $0.providerID.rawValue,
+                                baseModelRaw: $0.baseModelRaw,
+                                kind: $0.kind.rawValue,
+                                configID: $0.configID,
+                                valueRaw: $0.valueRaw
+                            )
+                        },
+                        status: .running,
+                        statusText: "Test harness running",
+                        latestAssistantPreview: nil,
+                        interaction: nil,
+                        transcriptItemCount: 0,
+                        updatedAt: Date(),
+                        parentSessionID: session.parentSessionID,
+                        failureReason: nil,
+                        worktreeBindings: [],
+                        activeWorktreeMerges: []
+                    )
+                    return AgentExternalMCPRunStarter.StartOutcome(snapshot: snapshot, delivery: .startedRun)
+                }
                 throw MCPError.internalError("Injected provider start failure.")
             }
         )
@@ -286,7 +351,7 @@ final class MCPWorkspaceScopedCursorModelParameterTests: XCTestCase {
             providerID: .cursor,
             baseModelRaw: "grok-4.6",
             kind: .thinking,
-            configID: "Cursor.Thought-Level",
+            configID: "effort",
             valueRaw: value
         )
     }

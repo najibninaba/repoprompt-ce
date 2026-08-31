@@ -101,10 +101,10 @@ enum AgentMCPModelParameterSupport {
         guard agentRaw == AgentProviderKind.cursor.rawValue,
               let modelRaw
         else { return [] }
-        return ACPModelParameterSelection.selections(
-            for: .cursor,
-            activeBaseModelRaw: modelRaw,
-            from: selections
+        return ACPModelParameterResolver.effectiveSelections(
+            providerID: .cursor,
+            selectedModelRaw: modelRaw,
+            persistedSelections: selections
         )
     }
 

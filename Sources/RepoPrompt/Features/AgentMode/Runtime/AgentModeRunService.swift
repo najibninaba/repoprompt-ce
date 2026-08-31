@@ -145,10 +145,10 @@ final class AgentModeRunService {
                 sessionModeID: runtimePermission.acpSessionModeID,
                 autoApproveAllToolPermissions: runtimePermission.autoApproveAllACPToolPermissions,
                 modelParameterSelections: selectedAgent == .cursor
-                    ? ACPModelParameterSelection.selections(
-                        for: .cursor,
-                        activeBaseModelRaw: session.selectedModelRaw,
-                        from: session.acpModelParameterSelections
+                    ? ACPModelParameterResolver.effectiveSelections(
+                        providerID: .cursor,
+                        selectedModelRaw: session.selectedModelRaw,
+                        persistedSelections: session.acpModelParameterSelections
                     )
                     : []
             )
@@ -257,10 +257,10 @@ final class AgentModeRunService {
             sessionModeID: runtimePermission.acpSessionModeID,
             autoApproveAllToolPermissions: runtimePermission.autoApproveAllACPToolPermissions,
             modelParameterSelections: selectedAgent == .cursor
-                ? ACPModelParameterSelection.selections(
-                    for: .cursor,
-                    activeBaseModelRaw: session.selectedModelRaw,
-                    from: session.acpModelParameterSelections
+                ? ACPModelParameterResolver.effectiveSelections(
+                    providerID: .cursor,
+                    selectedModelRaw: session.selectedModelRaw,
+                    persistedSelections: session.acpModelParameterSelections
                 )
                 : []
         )

@@ -278,6 +278,7 @@ struct AgentSessionMetadataRecord: Codable, Equatable, Identifiable {
             agentKind: agentKindRaw,
             agentModel: agentModelRaw,
             lastRunState: lastRunStateRaw,
+            acpModelParameterSelections: acpModelParameterSelections,
             parentSessionID: parentSessionID,
             isMCPOriginated: isMCPOriginated,
             worktreeBindingSummaries: worktreeBindingSummaries,

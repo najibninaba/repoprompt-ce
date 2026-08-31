@@ -34,27 +34,27 @@ struct CursorACPAgentProvider: ACPAgentProvider {
         let configID = Self.semanticToken(input.configID)
         let displayName = Self.semanticToken(input.displayName)
         let identity = Set([configID, displayName])
+        let choiceValues = Set(input.choices.map { Self.semanticToken($0.rawValue) })
+        let isBooleanSelector = choiceValues == Set(["false", "true"])
 
         guard category != "model", category != "mode",
               configID != "model", configID != "mode"
         else { return nil }
 
-        if ["thought_level", "thinking_level", "reasoning_effort"].contains(category) {
-            return .thinking
-        }
-
         let isGenericCategory = category == "model_config" || category == "model_parameter"
         let isMissingCategory = category.isEmpty
-        guard isGenericCategory || isMissingCategory else { return nil }
-
+        let isThinkingCategory = ["thought_level", "thinking_level", "reasoning_effort"].contains(category)
+        guard isGenericCategory || isMissingCategory || isThinkingCategory else { return nil }
         let thinkingIdentities = Set([
             "thought_level",
             "thinking_level",
             "reasoning_effort",
             "effort",
+            "reasoning",
+            "thinking",
             "cursor.thought_level"
         ])
-        if !identity.isDisjoint(with: thinkingIdentities) {
+        if isThinkingCategory || !identity.isDisjoint(with: thinkingIdentities), !isBooleanSelector {
             return .thinking
         }
 

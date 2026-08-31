@@ -2118,7 +2118,7 @@ final class AgentModeRunServiceLifecycleTests: XCTestCase {
                     "type": "select",
                     "currentValue": current_model,
                     "options": [
-                        {"value": "model-a", "name": "Model A"},
+                    {"value": "model-a", "name": "Model A"},
                         {"value": "model-b", "name": "Model B"}
                     ]
                 },

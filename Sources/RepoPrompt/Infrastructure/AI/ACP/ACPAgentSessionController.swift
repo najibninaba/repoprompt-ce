@@ -4,9 +4,16 @@ import Foundation
 actor ACPAgentSessionController {
     struct RequestTimeouts {
         let bootstrapSeconds: TimeInterval
+        let operationalSeconds: TimeInterval
+
+        init(bootstrapSeconds: TimeInterval, operationalSeconds: TimeInterval = 30) {
+            self.bootstrapSeconds = bootstrapSeconds
+            self.operationalSeconds = operationalSeconds
+        }
 
         static let `default` = RequestTimeouts(
-            bootstrapSeconds: 30
+            bootstrapSeconds: 30,
+            operationalSeconds: 30
         )
     }
 
@@ -293,6 +300,40 @@ actor ACPAgentSessionController {
 
     func currentDiscoveredSessionModels() -> ACPDiscoveredSessionModels? {
         discoveredSessionModels
+    }
+
+    func cursorAvailableModelCatalog() async throws -> ACPDiscoveredSessionModels {
+        guard provider.providerID == .cursor else {
+            throw ControllerError.requestFailed("Cursor model catalog is only available for Cursor ACP sessions.")
+        }
+        guard state == .sessionOpen || state == .promptRunning else {
+            throw ControllerError.invalidState(expected: "sessionOpen or promptRunning", actual: state)
+        }
+        let response = try await sendRequest(method: "cursor/list_available_models", params: [:])
+        guard let rawModels = response["models"] as? [[String: Any]] else {
+            throw ControllerError.protocolViolation("cursor/list_available_models response missing models")
+        }
+
+        var options: [AgentModelOption] = []
+        var parameterSets: [ACPModelParameterSet] = []
+        for rawModel in rawModels {
+            guard let option = parseDiscoveredConfigModelOption(from: rawModel) else { continue }
+            options.append(option)
+            guard let configOptions = rawModel["configOptions"] as? [[String: Any]] else { continue }
+            parameterSets.append(contentsOf: parseModelParameterSets(
+                from: configOptions,
+                baseModelRaw: option.rawValue
+            ))
+        }
+        let mergedOptions = mergeModelOptions(options)
+        guard !mergedOptions.isEmpty else {
+            throw ControllerError.protocolViolation("cursor/list_available_models response has no usable models")
+        }
+        return ACPDiscoveredSessionModels(
+            options: mergedOptions,
+            currentModelRaw: discoveredSessionModels?.currentModelRaw,
+            modelParameterSets: parameterSets
+        )
     }
 
     init(
@@ -944,12 +985,11 @@ actor ACPAgentSessionController {
                   let parameterSet = models.modelParameterSets.first(where: {
                       normalizedCursorModelAlias($0.baseModelRaw) == normalizedCursorModelAlias(currentModel)
                   }),
-                  let definition = parameterSet.definition(configID: selection.configID),
+                  let definition = parameterSet.definition(kind: selection.kind),
                   selection.identity == ACPModelParameterIdentity(
                       providerID: provider.providerID,
                       baseModelRaw: parameterSet.baseModelRaw,
-                      kind: definition.kind,
-                      configID: definition.configID
+                      kind: definition.kind
                   ),
                   let choice = definition.choice(matching: selection.valueRaw)
             else {
@@ -1858,6 +1898,8 @@ actor ACPAgentSessionController {
         switch method {
         case "initialize", "authenticate", "session/new", "session/load":
             requestTimeouts.bootstrapSeconds
+        case "cursor/list_available_models", "session/set_config_option":
+            requestTimeouts.operationalSeconds
         default:
             nil
         }
