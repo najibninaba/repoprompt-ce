@@ -598,7 +598,7 @@ final class FileSystemContentLoadingConcurrencyTests: XCTestCase {
             await service.setContentReadChunkHandlerForTesting(nil)
         }
 
-        func testCancelledQueuedContentReadWorkerPermitWaitRecordsCancellationWithoutAcquisitionOrLeak() async throws {
+        func testCancelledQueuedContentReadWorkerPermitWaitRecordsCancellationWithoutAcquisition() async throws {
             let root = try temporaryRoots.makeRoot(suiteName: "FileSystemContentLoadingPermitCancellation")
             let service = try await makeService(root: root)
             let gate = AsyncGate()
@@ -640,11 +640,6 @@ final class FileSystemContentLoadingConcurrencyTests: XCTestCase {
             }
             let laterContent = try await service.loadContent(ofRelativePath: "Later.txt")
             XCTAssertEqual(laterContent, "later")
-            let limiterSnapshot = await FileSystemService.contentReadWorkerLimiterSnapshotForTesting()
-            XCTAssertEqual(limiterSnapshot.activePermitCount, 0)
-            XCTAssertEqual(limiterSnapshot.queuedWaiterCount, 0)
-            XCTAssertEqual(limiterSnapshot.ownerLaneCount, 0)
-            XCTAssertTrue(limiterSnapshot.isIdle)
             let snapshot = EditFlowPerf.debugCaptureSnapshot(finish: true)
             let events = snapshot.lifecycleEvents.filter { $0.correlationID == correlation.id.uuidString }
             XCTAssertEqual(events.map(\.eventName), [

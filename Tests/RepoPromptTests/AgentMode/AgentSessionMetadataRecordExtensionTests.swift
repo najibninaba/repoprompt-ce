@@ -725,6 +725,29 @@ final class AgentSessionMetadataRecordExtensionTests: XCTestCase {
         XCTAssertEqual(record.keyPaths, [])
     }
 
+    func testLightweightSessionMetadataPreservesCursorModelParameters() {
+        let selection = ACPModelParameterSelection(
+            providerID: .cursor,
+            baseModelRaw: "grok-4.6",
+            kind: .thinking,
+            configID: "effort",
+            valueRaw: "high"
+        )
+        let session = AgentSession(
+            agentKind: AgentProviderKind.cursor.rawValue,
+            agentModel: "grok-4.6",
+            acpModelParameterSelections: [selection]
+        )
+        let record = AgentSessionMetadataRecord.record(
+            from: session,
+            fileURL: URL(fileURLWithPath: "/tmp/cursor-parameters.json"),
+            observedFileSize: nil,
+            observedFileModificationDate: nil
+        )
+
+        XCTAssertEqual(record.agentSessionMeta().acpModelParameterSelections, [selection])
+    }
+
     func testRecordFromFullSessionProducesNonZeroV5Fields() {
         // A full session with transcript turns (timestamps) produces non-zero v5 fields.
         // This is what the save/load path and on-demand enrichment compute from real turns.

@@ -433,12 +433,13 @@ final class MCPRunRoutingDiagnosticsTests: XCTestCase {
                 await waiter.waitUntilRouted(runID: runID, timeoutSeconds: -1)
             }
 
-            var continuationCount = 0
-            for _ in 0 ..< 100 {
-                continuationCount = await waiter.debugContinuationCount(runID: runID)
-                if continuationCount == 2 { break }
-                await Task.yield()
+            try await AsyncTestWait.waitUntil(
+                "legacy nonpositive timeout waiter enrollment",
+                timeout: TestFenceDefaults.enterWait
+            ) {
+                await waiter.debugContinuationCount(runID: runID) == 2
             }
+            let continuationCount = await waiter.debugContinuationCount(runID: runID)
             XCTAssertEqual(continuationCount, 2, "nonpositive legacy timeouts must not resolve immediately")
             XCTAssertTrue(clock.activeDeadlines().isEmpty)
 

@@ -41,6 +41,56 @@ final class ToolOutputFormatterAgentManageTests: XCTestCase {
         XCTAssertTrue(text.contains("`codex:gpt-5.1-codex-max` — GPT-5.1 Codex Max"), text)
     }
 
+    func testListAgentsShowsCursorParametersWithoutSynthesizingModelVariants() throws {
+        let value: Value = .object([
+            "agents": .array([
+                .object([
+                    "name": .string("Cursor"),
+                    "available": .bool(true),
+                    "models": .array([
+                        .object([
+                            "model_id": .string("cursor:grok"),
+                            "name": .string("Grok"),
+                            "model_parameters": .array([
+                                .object([
+                                    "kind": .string("thinking"),
+                                    "config_id": .string("thought_level"),
+                                    "name": .string("Effort"),
+                                    "current_value": .string("high"),
+                                    "choices": .array([
+                                        .object(["value": .string("low"), "name": .string("Low")]),
+                                        .object(["value": .string("high"), "name": .string("High")])
+                                    ])
+                                ]),
+                                .object([
+                                    "kind": .string("speed"),
+                                    "config_id": .string("model_config"),
+                                    "name": .string("Speed"),
+                                    "current_value": .string("standard"),
+                                    "choices": .array([
+                                        .object(["value": .string("standard"), "name": .string("Standard")]),
+                                        .object(["value": .string("fast"), "name": .string("Fast")])
+                                    ])
+                                ])
+                            ])
+                        ])
+                    ])
+                ])
+            ])
+        ])
+
+        let text = try onlyText(ToolOutputFormatter.formatAgentManage(
+            args: ["op": .string("list_agents")],
+            value: value
+        ))
+
+        XCTAssertTrue(text.contains("`cursor:grok` — Grok"), text)
+        XCTAssertTrue(text.contains("`thought_level` — Effort: `{low|high}` (current: `high`)"), text)
+        XCTAssertTrue(text.contains("`model_config` — Speed: `{standard|fast}` (current: `standard`)"), text)
+        XCTAssertFalse(text.contains("cursor:grok-high"), text)
+        XCTAssertFalse(text.contains("cursor:grok-fast"), text)
+    }
+
     private func model(id: String, name: String, effort: String?) -> Value {
         var object: [String: Value] = [
             "model_id": .string(id),
